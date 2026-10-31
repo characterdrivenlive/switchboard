@@ -76,6 +76,10 @@ db.exec(`
   );
   CREATE INDEX IF NOT EXISTS idx_inbox_member ON inbox(member_id, seen, id);
 `);
+// AI brain columns (added after v1; ALTER is a no-op error if they already exist).
+for (const col of ['ai_provider TEXT', 'ai_model TEXT', "ai_prompt TEXT NOT NULL DEFAULT ''"]) {
+  try { db.exec(`ALTER TABLE members ADD COLUMN ${col}`); } catch {}
+}
 
 const now = () => Date.now();
 const hashToken = (t) => crypto.createHash('sha256').update(t).digest('hex');
@@ -97,10 +101,10 @@ function createMember({ handle, name, kind, role = 'member', description = '', w
 }
 
 function getMember(id) {
-  const m = db.prepare(`SELECT id, handle, name, kind, role, description, color, webhook_url, status, last_seen, created_at FROM members WHERE id = ?`).get(id);
+  const m = db.prepare(`SELECT id, handle, name, kind, role, description, color, webhook_url, status, last_seen, created_at, ai_provider, ai_model, ai_prompt FROM members WHERE id = ?`).get(id);
   return m || null;
 }
-const publicMember = (m) => m && ({ id: m.id, handle: m.handle, name: m.name, kind: m.kind, role: m.role, description: m.description, color: m.color, status: m.status, last_seen: m.last_seen, online: isOnline(m.id) });
+const publicMember = (m) => m && ({ id: m.id, handle: m.handle, name: m.name, kind: m.kind, role: m.role, description: m.description, color: m.color, status: m.status, last_seen: m.last_seen, online: isOnline(m.id) || !!m.ai_provider, ai_provider: m.ai_provider || null });
 
 function joinChannel(channelId, memberId) {
   const latest = db.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM messages WHERE channel_id = ?`).get(channelId).id;
@@ -114,6 +118,7 @@ function bootstrap() {
     if (process.env.OWNER_TOKEN) {
       db.prepare(`UPDATE members SET token_hash = ? WHERE id = ?`).run(hashToken(process.env.OWNER_TOKEN), owner.id);
     }
+    if (process.env.OWNER_NAME) db.prepare(`UPDATE members SET name = ? WHERE id = ?`).run(process.env.OWNER_NAME, owner.id);
     return;
   }
   const t = now();
@@ -151,6 +156,21 @@ function seedMembers() {
   if (created.length) console.log(`\n================ NEW MEMBER TOKENS ================\n${created.join('\n')}\n===================================================\n`);
 }
 seedMembers();
+
+// Optional: AI_CONFIG='{"flo":{"provider":"openai","model":"gpt-5"}}' sets each bot's brain on boot.
+// A prompt here is only used if the bot has no instructions yet (UI edits are never overwritten).
+function applyAIConfig() {
+  if (!process.env.AI_CONFIG) return;
+  let cfg;
+  try { cfg = JSON.parse(process.env.AI_CONFIG); } catch { return console.warn('[ai] AI_CONFIG is not valid JSON'); }
+  for (const [handle, c] of Object.entries(cfg)) {
+    const m = db.prepare(`SELECT id, ai_prompt FROM members WHERE handle = ?`).get(handle);
+    if (!m) continue;
+    if (c.provider !== undefined) db.prepare(`UPDATE members SET ai_provider = ? WHERE id = ?`).run(AI_PROVIDERS[c.provider] ? c.provider : null, m.id);
+    if (c.model) db.prepare(`UPDATE members SET ai_model = ? WHERE id = ?`).run(c.model, m.id);
+    if (c.prompt && !m.ai_prompt) db.prepare(`UPDATE members SET ai_prompt = ? WHERE id = ?`).run(c.prompt, m.id);
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Real-time: Server-Sent Events + long-poll waiters
@@ -249,8 +269,84 @@ function postMessage(channelId, author, body, parentId = null) {
     emit([mid], 'inbox', { reason, message: msg });
     wakeWaiters(mid);
     fireWebhook(mid, reason, msg);
+    maybeRespondAsAI(mid, reason, msg, author);
   }
   return msg;
+}
+
+// ---------------------------------------------------------------------------
+// AI brains: members with ai_provider set answer @mentions / DMs via an LLM API.
+// Both OpenAI and xAI speak the same chat-completions format.
+// ---------------------------------------------------------------------------
+const AI_PROVIDERS = {
+  openai: { label: 'ChatGPT', base: () => process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1', key: () => process.env.OPENAI_API_KEY, keyName: 'OPENAI_API_KEY', model: () => process.env.OPENAI_MODEL || 'gpt-5' },
+  xai: { label: 'Grok', base: () => process.env.XAI_BASE_URL || 'https://api.x.ai/v1', key: () => process.env.XAI_API_KEY, keyName: 'XAI_API_KEY', model: () => process.env.XAI_MODEL || 'grok-4' },
+};
+const MAX_BOT_CHAIN = 4; // stop bots talking to each other forever
+
+function maybeRespondAsAI(memberId, reason, msg, author) {
+  const bot = getMember(memberId);
+  if (!bot || !bot.ai_provider || !AI_PROVIDERS[bot.ai_provider]) return;
+  const authorIsBot = !!getMember(author.id)?.ai_provider;
+  // Bots answer humans on mention/DM/thread; other bots only when explicitly @mentioned.
+  if (authorIsBot ? reason !== 'mention' : !['mention', 'dm', 'thread', 'channel'].includes(reason)) return;
+  const rootId = msg.parent_id || null;
+  if (authorIsBot) {
+    const recent = db.prepare(`SELECT m.member_id FROM messages m WHERE m.channel_id = ? AND ${rootId ? 'm.parent_id = ?' : 'm.parent_id IS NULL AND ?=?'} ORDER BY m.id DESC LIMIT ?`)
+      .all(msg.channel_id, ...(rootId ? [rootId] : [1, 1]), MAX_BOT_CHAIN);
+    if (recent.length >= MAX_BOT_CHAIN && recent.every((r) => getMember(r.member_id)?.ai_provider)) return;
+  }
+  setTimeout(() => respondAsAI(bot, msg).catch((e) => console.warn(`[ai] @${bot.handle}: ${e.message}`)), 50);
+}
+
+function conversationFor(bot, msg) {
+  let rows;
+  if (msg.parent_id) {
+    rows = db.prepare(`${SELECT_MSG} WHERE m.id = ? OR m.parent_id = ? ORDER BY m.id DESC LIMIT 30`).all(msg.parent_id, msg.parent_id).reverse();
+  } else {
+    rows = db.prepare(`${SELECT_MSG} WHERE m.channel_id = ? AND m.parent_id IS NULL AND m.id <= ? ORDER BY m.id DESC LIMIT 20`).all(msg.channel_id, msg.id).reverse();
+  }
+  const handles = new Map(db.prepare(`SELECT id, handle FROM members`).all().map((m) => [m.id, m.handle]));
+  return rows.map((r) => r.member_id === bot.id
+    ? { role: 'assistant', content: r.body }
+    : { role: 'user', content: `@${handles.get(r.member_id)}: ${r.body}` });
+}
+
+async function respondAsAI(bot, msg) {
+  const p = AI_PROVIDERS[bot.ai_provider];
+  const channel = db.prepare(`SELECT * FROM channels WHERE id = ?`).get(msg.channel_id);
+  const replyParent = channel.is_dm && !msg.parent_id ? null : (msg.parent_id || msg.id);
+  const say = (text) => postMessage(channel.id, bot, text, replyParent);
+  if (!p.key()) return say(`_(I'm not connected yet. The workspace owner needs to add ${p.keyName} in Railway.)_`);
+
+  const roster = db.prepare(`SELECT handle, name, description FROM members WHERE status != 'removed' ORDER BY handle`).all()
+    .map((m) => `- @${m.handle}: ${m.name}${m.description ? ` (${m.description})` : ''}`).join('\n');
+  const system = [
+    bot.ai_prompt || `You are ${bot.name}. ${bot.description}`,
+    `\n---\nYou are @${bot.handle} in Switchboard, the team's shared chat. You are replying ${channel.is_dm ? 'in a direct message' : `in #${channel.name}`}.`,
+    `Team members:\n${roster}`,
+    `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond. Do not prefix your reply with your name.`,
+  ].join('\n');
+
+  db.prepare(`UPDATE members SET status = 'typing…' WHERE id = ?`).run(bot.id);
+  broadcast('member', publicMember(getMember(bot.id)));
+  try {
+    const res = await fetch(`${p.base()}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: bot.ai_model || p.model(), messages: [{ role: 'system', content: system }, ...conversationFor(bot, msg)] }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+    const text = String(data.choices?.[0]?.message?.content || '').trim();
+    if (text) say(text);
+  } catch (e) {
+    say(`_(I couldn't reply: ${String(e.message).slice(0, 200)})_`);
+  } finally {
+    db.prepare(`UPDATE members SET status = '' WHERE id = ?`).run(bot.id);
+    broadcast('member', publicMember(getMember(bot.id)));
+  }
 }
 
 function fireWebhook(memberId, reason, msg) {
@@ -405,15 +501,25 @@ route('POST', '/api/members', ({ me, body }) => {
   broadcast('member', publicMember(member));
   return { member: { ...publicMember(member), webhook_url: member.webhook_url }, token };
 });
+route('GET', '/api/members/:id', ({ me, params }) => {
+  const m = getMember(Number(params.id));
+  if (!m) throw httpError(404, 'Member not found');
+  const out = publicMember(m);
+  if (me.role === 'owner') Object.assign(out, { webhook_url: m.webhook_url, ai_model: m.ai_model, ai_prompt: m.ai_prompt, ai_default_model: m.ai_provider ? AI_PROVIDERS[m.ai_provider]?.model() : null, ai_key_set: m.ai_provider ? !!AI_PROVIDERS[m.ai_provider]?.key() : null });
+  return out;
+});
 route('PATCH', '/api/members/:id', ({ me, params, body }) => {
   requireOwner(me);
   const m = getMember(Number(params.id));
   if (!m) throw httpError(404, 'Member not found');
   for (const f of ['name', 'description', 'status']) if (body[f] !== undefined) db.prepare(`UPDATE members SET ${f} = ? WHERE id = ?`).run(String(body[f]), m.id);
   if (body.webhook_url !== undefined) db.prepare(`UPDATE members SET webhook_url = ? WHERE id = ?`).run(body.webhook_url || null, m.id);
+  if (body.ai_provider !== undefined) db.prepare(`UPDATE members SET ai_provider = ? WHERE id = ?`).run(AI_PROVIDERS[body.ai_provider] ? body.ai_provider : null, m.id);
+  if (body.ai_model !== undefined) db.prepare(`UPDATE members SET ai_model = ? WHERE id = ?`).run(String(body.ai_model || '').trim() || null, m.id);
+  if (body.ai_prompt !== undefined) db.prepare(`UPDATE members SET ai_prompt = ? WHERE id = ?`).run(String(body.ai_prompt).slice(0, 20000), m.id);
   const out = getMember(m.id);
   broadcast('member', publicMember(out));
-  return { ...publicMember(out), webhook_url: out.webhook_url };
+  return { ...publicMember(out), webhook_url: out.webhook_url, ai_model: out.ai_model, ai_prompt: out.ai_prompt };
 });
 route('POST', '/api/members/:id/rotate-token', ({ me, params }) => {
   requireOwner(me);
@@ -644,5 +750,6 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+applyAIConfig();
 server.listen(PORT, () => console.log(`Switchboard running on http://localhost:${PORT}`));
 module.exports = server;

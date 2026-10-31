@@ -32,8 +32,20 @@ function mcpSession(token) {
   return { rpc, tool, close: () => p.kill() };
 }
 
+const http = require('node:http');
+const llmCalls = [];
+const fakeLLM = http.createServer((req, res) => {
+  let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
+    const body = JSON.parse(b); llmCalls.push({ url: req.url, auth: req.headers.authorization, body });
+    res.writeHead(200, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ choices: [{ message: { content: `reply from ${body.model}` } }] }));
+  });
+});
+const LLM_PORT = PORT + 1;
+
 (async () => {
-  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan' }, stdio: ['ignore', 'pipe', 'inherit'] });
+  await new Promise((r) => fakeLLM.listen(LLM_PORT, r));
+  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res) => server.stdout.on('data', (d) => String(d).includes('running') && res()));
   let passed = 0;
   const step = async (name, fn) => { await fn(); passed++; console.log(`  ✓ ${name}`); };
@@ -123,6 +135,28 @@ function mcpSession(token) {
       await call(OWNER, 'DELETE', `/api/members/${writer.member.id}`);
       await assert.rejects(call(token, 'GET', '/api/me'), { status: 401 });
     });
+    await step('AI brains reply to mentions and DMs', async () => {
+      const wait = async (fn) => { for (let i = 0; i < 50; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
+      const root = await call(OWNER, 'POST', '/api/channels/general/messages', { body: '@flo what is the call time?' });
+      const t = await wait(async () => { const t = await call(OWNER, 'GET', `/api/messages/${root.id}/thread`); return t.replies.find((r) => r.author === 'flo') && t; });
+      assert.equal(t.replies[0].body, 'reply from gpt-5');
+      const call0 = llmCalls.at(-1);
+      assert.equal(call0.auth, 'Bearer sk-test');
+      assert.match(call0.body.messages[0].content, /You are Flo, a warm stage manager/);
+      assert.match(call0.body.messages[0].content, /@grokbot/);
+      assert.equal(call0.body.messages.at(-1).content, '@joan: @flo what is the call time?');
+      // Follow-up in the thread without re-mentioning still gets an answer.
+      await call(OWNER, 'POST', `/api/messages/${root.id}/replies`, { body: 'and the end time?' });
+      await wait(async () => (await call(OWNER, 'GET', `/api/messages/${root.id}/thread`)).replies.filter((r) => r.author === 'flo').length === 2);
+      // Missing key → a friendly note instead of silence.
+      const dm = await call(OWNER, 'POST', '/api/dm', { to: 'grokbot', body: 'hi' });
+      const msgs = await wait(async () => { const r = await call(OWNER, 'GET', `/api/channels/${dm.channel.id}/messages`); return r.messages.length === 2 && r.messages; });
+      assert.match(msgs[1].body, /XAI_API_KEY/);
+      // Owner sees brain settings; owner rename applies.
+      const flo = (await call(OWNER, 'GET', '/api/members')).find((m) => m.handle === 'flo');
+      const full = await call(OWNER, 'GET', `/api/members/${flo.id}`);
+      assert.equal(full.ai_provider, 'openai'); assert.equal(full.ai_key_set, true);
+    });
     await step('web UI is served', async () => {
       const html = await (await fetch(BASE + '/')).text();
       assert.match(html, /Switchboard/);
@@ -133,6 +167,7 @@ function mcpSession(token) {
     process.exitCode = 1;
   } finally {
     server.kill();
+    fakeLLM.close();
     fs.rmSync(DATA_DIR, { recursive: true, force: true });
   }
 })();

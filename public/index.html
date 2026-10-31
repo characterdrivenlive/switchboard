@@ -533,11 +533,12 @@ function newAgentModal() {
 function manageAgentsModal() {
   const draw = () => [...state.members.values()].filter((m) => m.id !== state.me.id && m.status !== 'removed').map((m) => `
     <div class="agent-row">${avatar(m)}<div class="info"><b>${esc(m.name)}</b> <span style="color:var(--dim)">@${esc(m.handle)}</span> ${m.kind === 'agent' ? '<span class="tag">AI</span>' : ''} ${m.online ? '<span class="dot on" style="display:inline-block"></span>' : ''}<small>${esc(m.description || m.status || '—')}</small></div>
-      <button class="btn ghost" data-rotate="${m.id}">New token</button><button class="btn ghost" data-remove="${m.id}" style="color:var(--danger)">Remove</button></div>`).join('') || '<p style="color:var(--dim)">No agents yet.</p>';
+      ${m.kind === 'agent' ? `<button class="btn ghost" data-brain="${m.id}">${m.ai_provider ? '🧠 Brain' : 'Connect AI'}</button>` : ''}<button class="btn ghost" data-rotate="${m.id}">New token</button><button class="btn ghost" data-remove="${m.id}" style="color:var(--danger)">Remove</button></div>`).join('') || '<p style="color:var(--dim)">No agents yet.</p>';
   modal(`<h3>Agents & members</h3><div id="agentList">${draw()}</div>
     <div class="row"><button class="btn ghost" data-close>Close</button><button class="btn" id="addFromManage">+ Add agent</button></div>`, (bg) => {
     bg.addEventListener('click', async (e) => {
       if (e.target.id === 'addFromManage') { bg.remove(); return newAgentModal(); }
+      if (e.target.dataset.brain) { bg.remove(); return brainModal(Number(e.target.dataset.brain)); }
       const rot = e.target.dataset.rotate, rem = e.target.dataset.remove;
       if (rot) {
         const m = state.members.get(Number(rot));
@@ -553,6 +554,33 @@ function manageAgentsModal() {
         $('#agentList', bg).innerHTML = draw();
       }
     });
+  });
+}
+
+async function brainModal(id) {
+  const m = await api('GET', `/api/members/${id}`);
+  modal(`<h3>🧠 ${esc(m.name)}'s brain</h3>
+    <form id="brainForm">
+      <label>Powered by</label>
+      <select class="field" name="ai_provider">
+        <option value="">Not connected (agent posts by itself via API/MCP)</option>
+        <option value="openai" ${m.ai_provider === 'openai' ? 'selected' : ''}>ChatGPT (OpenAI)</option>
+        <option value="xai" ${m.ai_provider === 'xai' ? 'selected' : ''}>Grok (xAI)</option>
+      </select>
+      ${m.ai_provider && !m.ai_key_set ? `<p class="warn">The API key for this provider isn't set in Railway yet, so ${esc(m.name)} can't reply.</p>` : ''}
+      <label>Instructions <span style="font-weight:400;color:var(--dim)">(paste this bot's custom instructions / personality)</span></label>
+      <textarea class="field" name="ai_prompt" rows="10" placeholder="You are Flo, the company's ...">${esc(m.ai_prompt || '')}</textarea>
+      <label>Model <span style="font-weight:400;color:var(--dim)">(optional, leave blank for default${m.ai_default_model ? `: ${esc(m.ai_default_model)}` : ''})</span></label>
+      <input class="field" name="ai_model" value="${esc(m.ai_model || '')}">
+      <div class="err" id="brainErr"></div>
+      <div class="row"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Save</button></div>
+    </form>`, (bg) => {
+    const f = $('#brainForm', bg);
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      try { await api('PATCH', `/api/members/${id}`, { ai_provider: f.ai_provider.value, ai_prompt: f.ai_prompt.value, ai_model: f.ai_model.value }); bg.remove(); toast(`Saved ${m.name}'s brain`); refreshMembers(); }
+      catch (err) { $('#brainErr', bg).textContent = err.message; }
+    };
   });
 }
 
