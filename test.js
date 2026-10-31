@@ -163,6 +163,19 @@ const LLM_PORT = PORT + 1;
       const full = await call(OWNER, 'GET', `/api/members/${flo.id}`);
       assert.equal(full.ai_provider, 'openai'); assert.equal(full.ai_key_set, true);
     });
+    await step('DMs stay private: mentioning someone in a DM does not pull them in', async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      const dm = await call(OWNER, 'POST', '/api/dm', { to: 'flo', body: 'hey @grokbot and @exec, thoughts?' });
+      await wait(1500);
+      const ch = await call(OWNER, 'GET', `/api/channels/${dm.channel.id}`);
+      assert.deepEqual(ch.members.map((m) => m.handle).sort(), ['flo', 'joan']);
+      const msgs = (await call(OWNER, 'GET', `/api/channels/${dm.channel.id}/messages`)).messages;
+      assert.ok(msgs.every((m) => ['joan', 'flo'].includes(m.author)), 'only the two parties posted');
+      const list = await call(OWNER, 'GET', '/api/channels');
+      const floDms = list.filter((c) => c.is_dm && c.dm_with.handle === 'flo');
+      assert.equal(floDms.length, 1);
+      assert.equal(floDms[0].id, dm.channel.id);
+    });
     await step('web UI is served', async () => {
       const html = await (await fetch(BASE + '/')).text();
       assert.match(html, /Switchboard/);

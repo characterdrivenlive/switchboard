@@ -140,6 +140,19 @@ function bootstrap() {
 }
 bootstrap();
 
+// A DM's two parties are encoded in its name: dm-<lowId>-<highId>.
+function dmParties(ch) {
+  const m = /^dm-(\d+)-(\d+)$/.exec(ch.name);
+  return m ? [Number(m[1]), Number(m[2])] : [];
+}
+const isDmParty = (ch, memberId) => dmParties(ch).includes(memberId);
+
+// Repair DMs that picked up extra members (bots that were @mentioned inside a DM). History is kept.
+for (const ch of db.prepare(`SELECT * FROM channels WHERE is_dm = 1`).all()) {
+  const [a, b] = dmParties(ch);
+  if (a) db.prepare(`DELETE FROM channel_members WHERE channel_id = ? AND member_id NOT IN (?, ?)`).run(ch.id, a, b);
+}
+
 // Optional: SEED_MEMBERS='[{"handle":"flo","name":"Flo","description":"..."}]' creates any
 // members that don't exist yet and prints their tokens once to the server log.
 function seedMembers() {
@@ -239,6 +252,8 @@ function postMessage(channelId, author, body, parentId = null) {
     if (!parent || parent.channel_id !== channelId) throw httpError(400, 'parent_id not found in this channel');
     if (parent.parent_id) parentId = parent.parent_id; // flatten: threads are one level deep
   }
+  const target = db.prepare(`SELECT * FROM channels WHERE id = ?`).get(channelId);
+  if (target.is_dm && !isDmParty(target, author.id)) throw httpError(403, 'Only the two people in a direct message can post in it');
   joinChannel(channelId, author.id);
   const r = db.prepare(`INSERT INTO messages (channel_id, member_id, parent_id, body, created_at) VALUES (?,?,?,?,?)`).run(channelId, author.id, parentId, body, now());
   const id = Number(r.lastInsertRowid);
@@ -260,6 +275,7 @@ function postMessage(channelId, author, body, parentId = null) {
     for (const p of participants) if (!notify.has(p.member_id)) notify.set(p.member_id, 'thread');
   }
   notify.delete(author.id);
+  if (channel.is_dm) for (const mid of [...notify.keys()]) if (!isDmParty(channel, mid)) notify.delete(mid);
   const ins = db.prepare(`INSERT OR IGNORE INTO inbox (member_id, message_id, reason) VALUES (?,?,?)`);
   for (const [mid, reason] of notify) ins.run(mid, id, reason);
 
@@ -405,12 +421,14 @@ function listChannels(viewer) {
       (SELECT MAX(id) FROM messages m WHERE m.channel_id = c.id) AS last_message_id
     FROM channels c
     LEFT JOIN channel_members cm ON cm.channel_id = c.id AND cm.member_id = ?
-    WHERE c.archived = 0 AND (c.is_dm = 0 OR cm.member_id IS NOT NULL)
-    ORDER BY c.is_dm, c.name`).all(viewer.id, viewer.id);
+    WHERE c.archived = 0 AND (c.is_dm = 0 OR (cm.member_id IS NOT NULL AND (c.name LIKE 'dm-' || ? || '-%' OR c.name LIKE 'dm-%-' || ?)))
+    ORDER BY c.is_dm, c.name`).all(viewer.id, viewer.id, String(viewer.id), String(viewer.id));
   return rows.map((c) => {
     c.joined = !!c.joined; c.is_dm = !!c.is_dm;
     if (c.is_dm) {
-      const other = db.prepare(`SELECT m.id, m.handle, m.name, m.kind, m.color FROM channel_members cm JOIN members m ON m.id = cm.member_id WHERE cm.channel_id = ? AND m.id != ?`).get(c.id, viewer.id) || viewer;
+      const [a, b] = dmParties(c);
+      const otherId = a === viewer.id ? b : a;
+      const other = db.prepare(`SELECT id, handle, name, kind, color FROM members WHERE id = ?`).get(otherId) || viewer;
       c.dm_with = { ...other, online: isOnline(other.id) };
     }
     return c;
@@ -603,6 +621,7 @@ route('POST', '/api/channels/:ref/join', ({ me, params }) => { const ch = resolv
 route('POST', '/api/channels/:ref/leave', ({ me, params }) => { const ch = resolveChannel(decodeURIComponent(params.ref), me); db.prepare(`DELETE FROM channel_members WHERE channel_id = ? AND member_id = ?`).run(ch.id, me.id); return { ok: true }; });
 route('POST', '/api/channels/:ref/read', ({ me, params, body }) => {
   const ch = resolveChannel(decodeURIComponent(params.ref), me);
+  if (ch.is_dm && !isDmParty(ch, me.id)) return { ok: true };
   joinChannel(ch.id, me.id);
   const upTo = Number(body.message_id) || db.prepare(`SELECT COALESCE(MAX(id),0) AS id FROM messages WHERE channel_id = ?`).get(ch.id).id;
   db.prepare(`UPDATE channel_members SET last_read_id = MAX(last_read_id, ?) WHERE channel_id = ? AND member_id = ?`).run(upTo, ch.id, me.id);
