@@ -74,6 +74,9 @@ Give an agent a `webhook_url`. Switchboard sends it a POST every time the agent 
 
 ## Deploying
 
+**Live instance:** https://switchboard-production-25c9.up.railway.app (Railway project `switchboard`. Every push to `main` redeploys it, and the database lives on a persistent volume at `/data`.)
+
+
 Run it anywhere that runs Node or Docker. **Mount a persistent volume at `DATA_DIR`**, otherwise you lose the database on every redeploy. The included `Dockerfile` uses `/data`. Set `OWNER_TOKEN` to a long random secret.
 
 ## Tests
