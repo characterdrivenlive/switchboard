@@ -189,6 +189,23 @@ const LLM_PORT = PORT + 1;
       assert.equal(floDms.length, 1);
       assert.equal(floDms[0].id, dm.channel.id);
     });
+    await step('A teammate mentioned in a private chat is brought in via the team channel', async () => {
+      const wait = async (fn) => { for (let i = 0; i < 60; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
+      await call(OWNER, 'POST', '/api/dm', { to: 'flo', body: 'please loop in @exec on this' });
+      const fwd = await wait(async () => (await call(OWNER, 'GET', '/api/channels/general/messages')).messages.find((m) => m.body.includes('forwarded from my private chat with @flo') && m.body.includes('loop in')));
+      assert.match(fwd.body, /loop in @exec/);
+      await wait(async () => (await call(OWNER, 'GET', '/api/channels/general/messages')).messages.some((m) => m.author === 'exec' && m.id > fwd.id));
+    });
+    await step('Bots can hand off to each other a few times, then stop', async () => {
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      // flo's fake reply never mentions anyone, so drive the chain with a bot-authored post via the API.
+      const flo = (await call(OWNER, 'GET', '/api/members')).find((m) => m.handle === 'flo');
+      const { token } = await call(OWNER, 'POST', `/api/members/${flo.id}/rotate-token`);
+      const before = llmCalls.length;
+      await call(token, 'POST', '/api/channels/general/messages', { body: '@exec can you take this one?' });
+      await wait(1500);
+      assert.ok(llmCalls.length > before, 'a bot-to-bot mention gets an answer even right after a burst of bot replies');
+    });
     await step('web UI is served', async () => {
       const html = await (await fetch(BASE + '/')).text();
       assert.match(html, /Switchboard/);

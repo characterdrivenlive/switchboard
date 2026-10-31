@@ -261,7 +261,7 @@ function hydrate(rows, viewerId) {
 const SELECT_MSG = `SELECT m.id, m.channel_id, c.name AS channel, c.is_dm, m.member_id, m.parent_id, m.body, m.created_at, m.edited_at FROM messages m JOIN channels c ON c.id = m.channel_id`;
 const getMessage = (id, viewerId) => hydrate(db.prepare(`${SELECT_MSG} WHERE m.id = ?`).all(id), viewerId)[0] || null;
 
-function postMessage(channelId, author, body, parentId = null) {
+function postMessage(channelId, author, body, parentId = null, depth = null) {
   body = String(body || '').trim();
   if (!body) throw httpError(400, 'Message body is required');
   if (body.length > 40000) throw httpError(400, 'Message too long (max 40000 chars)');
@@ -275,6 +275,7 @@ function postMessage(channelId, author, body, parentId = null) {
   joinChannel(channelId, author.id);
   const r = db.prepare(`INSERT INTO messages (channel_id, member_id, parent_id, body, created_at) VALUES (?,?,?,?,?)`).run(channelId, author.id, parentId, body, now());
   const id = Number(r.lastInsertRowid);
+  if (depth) botDepth.set(id, depth);
   db.prepare(`UPDATE channel_members SET last_read_id = ? WHERE channel_id = ? AND member_id = ?`).run(id, channelId, author.id);
 
   // Figure out who needs to be notified: @mentions, DMs, thread participants.
@@ -293,7 +294,11 @@ function postMessage(channelId, author, body, parentId = null) {
     for (const p of participants) if (!notify.has(p.member_id)) notify.set(p.member_id, 'thread');
   }
   notify.delete(author.id);
-  if (channel.is_dm) for (const mid of [...notify.keys()]) if (!isDmParty(channel, mid)) notify.delete(mid);
+  if (channel.is_dm) {
+    const outsiders = [...notify.keys()].filter((mid) => !isDmParty(channel, mid));
+    for (const mid of outsiders) notify.delete(mid);
+    if (outsiders.length) setTimeout(() => forwardFromDm(channel, author, body, depth), 0);
+  }
   const ins = db.prepare(`INSERT OR IGNORE INTO inbox (member_id, message_id, reason) VALUES (?,?,?)`);
   for (const [mid, reason] of notify) ins.run(mid, id, reason);
 
@@ -350,7 +355,22 @@ async function anthropicComplete(p, model, system, messages) {
   if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
   return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
 }
-const MAX_BOT_CHAIN = 4; // stop bots talking to each other forever
+// Someone in a private chat @mentioned a teammate: forward the message to the team channel
+// (HANDOFF_CHANNEL, default #joani-desk, falling back to #general) so the teammate can answer.
+function forwardFromDm(dm, author, body, depth) {
+  const name = process.env.HANDOFF_CHANNEL || 'joani-desk';
+  const target = db.prepare(`SELECT * FROM channels WHERE name IN (?, 'general') AND is_dm = 0 ORDER BY name = ? DESC LIMIT 1`).get(name, name);
+  if (!target) return;
+  const [a, b] = dmParties(dm);
+  const other = getMember(a === author.id ? b : a);
+  const from = !other || other.id === author.id ? 'my private notes' : `my private chat with @${other.handle}`;
+  try {
+    postMessage(target.id, author, `_(forwarded from ${from})_\n${body}`, null, depth);
+  } catch (e) { console.warn(`[forward] ${e.message}`); }
+}
+
+const MAX_BOT_DEPTH = 3; // a bot reply to a bot reply to a bot reply is the limit
+const botDepth = new Map(); // message id -> how many bot hops since a human spoke
 
 function maybeRespondAsAI(memberId, reason, msg, author) {
   const bot = getMember(memberId);
@@ -359,11 +379,7 @@ function maybeRespondAsAI(memberId, reason, msg, author) {
   // Bots answer humans on mention/DM/thread; other bots only when explicitly @mentioned.
   if (authorIsBot ? reason !== 'mention' : !['mention', 'dm', 'thread', 'channel'].includes(reason)) return;
   const rootId = msg.parent_id || null;
-  if (authorIsBot) {
-    const recent = db.prepare(`SELECT m.member_id FROM messages m WHERE m.channel_id = ? AND ${rootId ? 'm.parent_id = ?' : 'm.parent_id IS NULL AND ?=?'} ORDER BY m.id DESC LIMIT ?`)
-      .all(msg.channel_id, ...(rootId ? [rootId] : [1, 1]), MAX_BOT_CHAIN);
-    if (recent.length >= MAX_BOT_CHAIN && recent.every((r) => getMember(r.member_id)?.ai_provider)) return;
-  }
+  if (authorIsBot && (botDepth.get(msg.id) || 1) >= MAX_BOT_DEPTH) return;
   (pendingAI.get(msg.id) || pendingAI.set(msg.id, []).get(msg.id)).push(bot);
 }
 
@@ -399,7 +415,8 @@ async function respondAsAI(bot, msg) {
   const channel = db.prepare(`SELECT * FROM channels WHERE id = ?`).get(msg.channel_id);
   // Reply in the main conversation; only stay in a thread if the person started one.
   const replyParent = msg.parent_id || null;
-  const say = (text) => postMessage(channel.id, bot, text, replyParent);
+  const depth = getMember(msg.member_id)?.ai_provider ? (botDepth.get(msg.id) || 1) + 1 : 1;
+  const say = (text) => postMessage(channel.id, bot, text, replyParent, depth);
   if (!p.key()) return say(`_(I'm not connected yet. The workspace owner needs to add ${p.keyName} in Railway.)_`);
 
   const roster = db.prepare(`SELECT handle, name, description FROM members WHERE status != 'removed' ORDER BY handle`).all()
@@ -409,7 +426,7 @@ async function respondAsAI(bot, msg) {
     `\n---\nYou are @${bot.handle} in Switchboard, the team's shared chat. You are replying ${channel.is_dm ? 'in a direct message' : `in #${channel.name}`}.`,
     `Team members:\n${roster}`,
     (() => { const o = db.prepare(`SELECT handle, name FROM members WHERE role = 'owner'`).get(); return o ? `${o.name} (@${o.handle}) is the owner and boss of this team. Messages marked "@${o.handle}:" come directly from ${o.name}; talk to ${o.name} directly, never as if relaying to someone else.` : ''; })(),
-    `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond. Do not prefix your reply with your name.`,
+    `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond; in a private chat, mentioning a teammate forwards your message to the team channel, where they will answer. Do not prefix your reply with your name.`,
   ].join('\n');
 
   db.prepare(`UPDATE members SET status = 'typing…' WHERE id = ?`).run(bot.id);
