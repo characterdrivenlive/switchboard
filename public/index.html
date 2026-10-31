@@ -324,12 +324,13 @@ async function markRead() {
   if (state.view?.type !== 'channel') return;
   await api('POST', `/api/channels/${state.view.id}/read`, {});
   const c = state.channels.find((x) => x.id === state.view.id); if (c) c.unread = 0;
-  state.inbox = state.inbox.filter((i) => i.message.channel_id !== state.view.id || i.message.parent_id);
   renderSidebar();
+  await Promise.all([refreshChannels(), refreshInbox()]);
 }
 async function openInbox() {
   state.view = { type: 'inbox' };
   const items = (await api('GET', '/api/inbox?all=1&limit=100')).items.reverse();
+  state.lastList = items.map((i) => i.message);
   $('#chanTitle').textContent = '🔔 Activity';
   $('#chanTopic').textContent = 'Mentions, DMs and thread replies addressed to you';
   $('#composer').classList.add('hidden');
@@ -342,6 +343,7 @@ async function openInbox() {
 async function runSearch(q) {
   state.view = { type: 'search' };
   const { results } = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
+  state.lastList = results;
   $('#chanTitle').textContent = `Search: “${q}”`;
   $('#chanTopic').textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
   $('#composer').classList.add('hidden');
@@ -354,7 +356,7 @@ async function openThread(id) {
   $('#thread').classList.remove('hidden');
   renderThread(true);
   $('#threadInput').focus();
-  refreshInbox();
+  refreshInbox(); refreshChannels();
 }
 function renderThread(scroll) {
   const t = state.thread; if (!t) return;
@@ -407,6 +409,7 @@ function connect() {
   es.onerror = () => { /* EventSource auto-reconnects */ };
 }
 function bumpUnread(m) {
+  if (m.member_id === state.me.id) return;
   const c = state.channels.find((x) => x.id === m.channel_id);
   if (c) { c.unread = (c.unread || 0) + 1; renderSidebar(); } else refreshChannels();
 }
@@ -629,7 +632,11 @@ function onMsgAction(container) {
       const text = prompt('Edit message:', cur?.body); if (text && text !== cur?.body) api('PATCH', `/api/messages/${id}`, { body: text }).catch((x) => toast(x.message));
     }
     if (act === 'delete' && confirm('Delete this message?')) api('DELETE', `/api/messages/${id}`).catch((x) => toast(x.message));
-    if (state.view?.type !== 'channel' && !act && !r) { const ch = Number(msgEl.dataset.ch); await openChannel(ch); }
+    if (state.view?.type !== 'channel' && !act && !r) {
+      const m = [...(state.lastList || [])].find((x) => x.id === id);
+      await openChannel(Number(msgEl.dataset.ch));
+      if (m?.parent_id) openThread(m.parent_id);
+    }
   });
 }
 
@@ -656,7 +663,10 @@ attachComposer($('#threadInput'), () => send($('#threadInput'), state.thread.roo
 $('#sendBtn').onclick = () => send($('#input'));
 $('#threadSend').onclick = () => send($('#threadInput'), state.thread.root.id);
 onMsgAction($('#msgs')); onMsgAction($('#threadMsgs'));
-window.addEventListener('focus', () => { if (state.view?.type === 'channel') markRead(); });
+window.addEventListener('focus', () => {
+  if (state.view?.type === 'channel') markRead();
+  else { refreshChannels(); refreshInbox(); }
+});
 
 // Infinite scroll back through history
 $('#msgs').addEventListener('scroll', async (e) => {
