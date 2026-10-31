@@ -138,16 +138,18 @@ const LLM_PORT = PORT + 1;
     await step('AI brains reply to mentions and DMs', async () => {
       const wait = async (fn) => { for (let i = 0; i < 50; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
       const root = await call(OWNER, 'POST', '/api/channels/general/messages', { body: '@flo what is the call time?' });
-      const t = await wait(async () => { const t = await call(OWNER, 'GET', `/api/messages/${root.id}/thread`); return t.replies.find((r) => r.author === 'flo') && t; });
-      assert.equal(t.replies[0].body, 'reply from gpt-5');
+      const top = await wait(async () => (await call(OWNER, 'GET', '/api/channels/general/messages')).messages.find((m) => m.author === 'flo' && m.id > root.id));
+      assert.equal(top.body, 'reply from gpt-5');
+      assert.equal(top.parent_id, null, 'bots reply in the main conversation');
       const call0 = llmCalls.at(-1);
       assert.equal(call0.auth, 'Bearer sk-test');
       assert.match(call0.body.messages[0].content, /You are Flo, a warm stage manager/);
       assert.match(call0.body.messages[0].content, /@grokbot/);
       assert.equal(call0.body.messages.at(-1).content, '@joan: @flo what is the call time?');
       // Follow-up in the thread without re-mentioning still gets an answer.
-      await call(OWNER, 'POST', `/api/messages/${root.id}/replies`, { body: 'and the end time?' });
-      await wait(async () => (await call(OWNER, 'GET', `/api/messages/${root.id}/thread`)).replies.filter((r) => r.author === 'flo').length === 2);
+      // In a thread the person started, the bot answers inside that thread.
+      await call(OWNER, 'POST', `/api/messages/${root.id}/replies`, { body: '@flo and the end time?' });
+      await wait(async () => (await call(OWNER, 'GET', `/api/messages/${root.id}/thread`)).replies.some((r) => r.author === 'flo'));
       // Missing key → a friendly note instead of silence.
       const dm = await call(OWNER, 'POST', '/api/dm', { to: 'grokbot', body: 'hi' });
       const msgs = await wait(async () => { const r = await call(OWNER, 'GET', `/api/channels/${dm.channel.id}/messages`); return r.messages.length === 2 && r.messages; });

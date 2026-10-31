@@ -382,7 +382,8 @@ function conversationFor(bot, msg) {
 async function respondAsAI(bot, msg) {
   const p = AI_PROVIDERS[bot.ai_provider];
   const channel = db.prepare(`SELECT * FROM channels WHERE id = ?`).get(msg.channel_id);
-  const replyParent = channel.is_dm && !msg.parent_id ? null : (msg.parent_id || msg.id);
+  // Reply in the main conversation; only stay in a thread if the person started one.
+  const replyParent = msg.parent_id || null;
   const say = (text) => postMessage(channel.id, bot, text, replyParent);
   if (!p.key()) return say(`_(I'm not connected yet. The workspace owner needs to add ${p.keyName} in Railway.)_`);
 
