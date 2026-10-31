@@ -34,18 +34,40 @@ function mcpSession(token) {
 
 const http = require('node:http');
 const llmCalls = [];
+const driveCalls = [];
 const fakeLLM = http.createServer((req, res) => {
   let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
-    const body = JSON.parse(b); llmCalls.push({ url: req.url, auth: req.headers.authorization, body });
-    res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify(req.url.endsWith('/messages') ? { content: [{ type: 'text', text: `claude says hi (${body.messages[0].role})` }] } : { choices: [{ message: { content: `reply from ${body.model}` } }] }));
+    const body = JSON.parse(b);
+    const reply = (obj) => { res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(obj)); };
+    if (req.url === '/drive') {
+      driveCalls.push(body);
+      if (body.key !== 'drive-test-key') return reply({ error: 'Unauthorized' });
+      if (body.action === 'create_doc') return reply({ id: 'doc1', title: body.title, url: 'https://docs.example/doc1' });
+      if (body.action === 'search') return reply({ files: [{ id: 'f1', title: 'Budget 2026', url: 'https://docs.example/f1' }] });
+      return reply({ error: 'unexpected action' });
+    }
+    llmCalls.push({ url: req.url, auth: req.headers.authorization, body });
+    if (req.url.endsWith('/messages')) {
+      if (body.model === 'tooltest') {
+        const toolResult = body.messages.flatMap((m) => (Array.isArray(m.content) ? m.content : [])).find((c) => c.type === 'tool_result');
+        if (!toolResult) return reply({ stop_reason: 'tool_use', content: [{ type: 'text', text: 'Looking.' }, { type: 'tool_use', id: 't1', name: 'drive_search', input: { query: 'budget' } }] });
+        return reply({ stop_reason: 'end_turn', content: [{ type: 'text', text: `Found it: ${toolResult.content}` }] });
+      }
+      return reply({ content: [{ type: 'text', text: `claude says hi (${body.messages[0].role})` }] });
+    }
+    if (body.model === 'tooltest') {
+      const tool = body.messages.find((m) => m.role === 'tool');
+      if (!tool) return reply({ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'drive_create_doc', arguments: JSON.stringify({ title: 'Concert plan', content: 'Step one' }) } }] } }] });
+      return reply({ choices: [{ message: { content: `Saved: ${JSON.parse(tool.content).url}` } }] });
+    }
+    reply({ choices: [{ message: { content: `reply from ${body.model}` } }] });
   });
 });
 const LLM_PORT = PORT + 1;
 
 (async () => {
   await new Promise((r) => fakeLLM.listen(LLM_PORT, r));
-  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_API_KEY: 'ant-test', SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }, { handle: 'exec', name: 'Exec Producer' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' }, exec: { provider: 'anthropic' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_API_KEY: 'ant-test', DRIVE_SCRIPT_URL: `http://localhost:${LLM_PORT}/drive`, DRIVE_SCRIPT_KEY: 'drive-test-key', AI_LEAD: 'exec', SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }, { handle: 'exec', name: 'Exec Producer' }, { handle: 'drv', name: 'Drive GPT' }, { handle: 'drv2', name: 'Drive Claude' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' }, exec: { provider: 'anthropic' }, drv: { provider: 'openai', model: 'tooltest' }, drv2: { provider: 'anthropic', model: 'tooltest' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res) => server.stdout.on('data', (d) => String(d).includes('running') && res()));
   let passed = 0;
   const step = async (name, fn) => { await fn(); passed++; console.log(`  ✓ ${name}`); };
@@ -205,6 +227,18 @@ const LLM_PORT = PORT + 1;
       await call(token, 'POST', '/api/channels/general/messages', { body: '@exec can you take this one?' });
       await wait(1500);
       assert.ok(llmCalls.length > before, 'a bot-to-bot mention gets an answer even right after a burst of bot replies');
+    });
+    await step('Agents can use Google Drive (ChatGPT/Grok style and Claude style)', async () => {
+      const wait = async (fn) => { for (let i = 0; i < 60; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
+      const a = await call(OWNER, 'POST', '/api/dm', { to: 'drv', body: 'save a plan to drive' });
+      const r1 = await wait(async () => (await call(OWNER, 'GET', `/api/channels/${a.channel.id}/messages`)).messages.find((m) => m.author === 'drv'));
+      assert.equal(r1.body, 'Saved: https://docs.example/doc1');
+      assert.ok(driveCalls.some((c) => c.action === 'create_doc' && c.title === 'Concert plan' && c.key === 'drive-test-key'));
+      const b = await call(OWNER, 'POST', '/api/dm', { to: 'drv2', body: 'find the budget' });
+      const r2 = await wait(async () => (await call(OWNER, 'GET', `/api/channels/${b.channel.id}/messages`)).messages.find((m) => m.author === 'drv2'));
+      assert.match(r2.body, /Found it: .*Budget 2026/);
+      const sys = llmCalls.filter((c) => c.body.model === 'tooltest').at(-1).body.system;
+      assert.match(sys, /Google Drive/);
     });
     await step('web UI is served', async () => {
       const html = await (await fetch(BASE + '/')).text();

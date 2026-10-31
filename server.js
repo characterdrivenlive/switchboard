@@ -324,16 +324,68 @@ const AI_PROVIDERS = {
   anthropic: { label: 'Claude', base: () => process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1', key: () => process.env.ANTHROPIC_API_KEY, keyName: 'ANTHROPIC_API_KEY', model: () => process.env.ANTHROPIC_MODEL || 'claude-opus-5-5', complete: anthropicComplete },
 };
 
-async function chatCompletionsComplete(p, model, system, messages) {
-  const res = await fetch(`${p.base()}/chat/completions`, {
+// ---------------------------------------------------------------------------
+// Google Drive tools, via an Apps Script "bridge" running in the owner's Google account
+// (see apps-script/Code.gs). Reads anything the owner can see; writes only in the
+// Switchboard folder (enforced by the script).
+// ---------------------------------------------------------------------------
+const driveEnabled = () => !!(process.env.DRIVE_SCRIPT_URL && process.env.DRIVE_SCRIPT_KEY);
+async function driveCall(action, args) {
+  const res = await fetch(process.env.DRIVE_SCRIPT_URL, {
     method: 'POST',
-    headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
-    body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, ...messages] }),
-    signal: AbortSignal.timeout(120000),
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ ...args, key: process.env.DRIVE_SCRIPT_KEY, action }),
+    redirect: 'follow',
+    signal: AbortSignal.timeout(90000),
   });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
-  return String(data.choices?.[0]?.message?.content || '').trim();
+  const text = await res.text();
+  let data;
+  try { data = JSON.parse(text); } catch { throw new Error(`Drive bridge returned an unexpected response (HTTP ${res.status})`); }
+  if (data.error) throw new Error(data.error);
+  return data;
+}
+const DRIVE_TOOLS = [
+  { name: 'drive_search', description: "Search Joani's Google Drive by words in the title or text. Returns up to 20 files with ids and links.",
+    parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'] } },
+  { name: 'drive_list', description: 'List the files and subfolders in a Drive folder. With no folder_id, lists the shared Switchboard folder.',
+    parameters: { type: 'object', properties: { folder_id: { type: 'string' } } } },
+  { name: 'drive_read', description: 'Read the text of a Google Doc, Sheet, Slides deck or text file by its id.',
+    parameters: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'] } },
+  { name: 'drive_create_doc', description: 'Create a new Google Doc in the shared Switchboard folder (or one of its subfolders). Use plain text; separate paragraphs with blank lines.',
+    parameters: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, folder_id: { type: 'string', description: 'Optional subfolder of the Switchboard folder' } }, required: ['title', 'content'] } },
+  { name: 'drive_update_doc', description: 'Add to (mode "append", the default) or rewrite (mode "replace") a Google Doc inside the Switchboard folder.',
+    parameters: { type: 'object', properties: { file_id: { type: 'string' }, content: { type: 'string' }, mode: { type: 'string', enum: ['append', 'replace'] } }, required: ['file_id', 'content'] } },
+];
+async function runTool(name, args) {
+  const action = { drive_search: 'search', drive_list: 'list', drive_read: 'read', drive_create_doc: 'create_doc', drive_update_doc: 'update_doc' }[name];
+  if (!action) return { error: `Unknown tool ${name}` };
+  try { return await driveCall(action, args || {}); } catch (e) { return { error: e.message }; }
+}
+const MAX_TOOL_ROUNDS = 6;
+const toolResult = (r) => JSON.stringify(r).slice(0, 30000);
+
+async function chatCompletionsComplete(p, model, system, messages) {
+  const tools = driveEnabled() ? DRIVE_TOOLS.map((t) => ({ type: 'function', function: t })) : undefined;
+  const convo = [{ role: 'system', content: system }, ...messages];
+  for (let round = 0; ; round++) {
+    const res = await fetch(`${p.base()}/chat/completions`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model, messages: convo, ...(tools ? { tools } : {}) }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+    const msg = data.choices?.[0]?.message || {};
+    if (!msg.tool_calls?.length) return String(msg.content || '').trim();
+    if (round >= MAX_TOOL_ROUNDS) return String(msg.content || '').trim() || '_(I needed more Drive steps than allowed. Could you narrow the request?)_';
+    convo.push({ role: 'assistant', content: msg.content || null, tool_calls: msg.tool_calls });
+    for (const call of msg.tool_calls) {
+      let args = {};
+      try { args = JSON.parse(call.function?.arguments || '{}'); } catch {}
+      convo.push({ role: 'tool', tool_call_id: call.id, content: toolResult(await runTool(call.function?.name, args)) });
+    }
+  }
 }
 
 // Claude's Messages API: system is separate, and turns must alternate starting with the user.
@@ -345,15 +397,26 @@ async function anthropicComplete(p, model, system, messages) {
     else turns.push({ role: m.role, content: m.content });
   }
   if (turns[0]?.role !== 'user') turns.unshift({ role: 'user', content: '(conversation continues)' });
-  const res = await fetch(`${p.base()}/messages`, {
-    method: 'POST',
-    headers: { 'x-api-key': p.key(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-    body: JSON.stringify({ model, max_tokens: 2048, system, messages: turns }),
-    signal: AbortSignal.timeout(120000),
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
-  return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+  const tools = driveEnabled() ? DRIVE_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) : undefined;
+  for (let round = 0; ; round++) {
+    const res = await fetch(`${p.base()}/messages`, {
+      method: 'POST',
+      headers: { 'x-api-key': p.key(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+      body: JSON.stringify({ model, max_tokens: 4096, system, messages: turns, ...(tools ? { tools } : {}) }),
+      signal: AbortSignal.timeout(120000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+    const blocks = data.content || [];
+    const uses = blocks.filter((b) => b.type === 'tool_use');
+    const text = blocks.filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+    if (data.stop_reason !== 'tool_use' || !uses.length) return text;
+    if (round >= MAX_TOOL_ROUNDS) return text || '_(I needed more Drive steps than allowed. Could you narrow the request?)_';
+    turns.push({ role: 'assistant', content: blocks });
+    const results = [];
+    for (const u of uses) results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResult(await runTool(u.name, u.input)) });
+    turns.push({ role: 'user', content: results });
+  }
 }
 // Someone in a private chat @mentioned a teammate: forward the message to the team channel
 // (HANDOFF_CHANNEL, default #joani-desk, falling back to #general) so the teammate can answer.
@@ -426,6 +489,7 @@ async function respondAsAI(bot, msg) {
     `\n---\nYou are @${bot.handle} in Switchboard, the team's shared chat. You are replying ${channel.is_dm ? 'in a direct message' : `in #${channel.name}`}.`,
     `Team members:\n${roster}`,
     (() => { const o = db.prepare(`SELECT handle, name FROM members WHERE role = 'owner'`).get(); return o ? `${o.name} (@${o.handle}) is the owner and boss of this team. Messages marked "@${o.handle}:" come directly from ${o.name}; talk to ${o.name} directly, never as if relaying to someone else.` : ''; })(),
+    driveEnabled() ? `You can use the team's Google Drive: search and read any of Joani's files, and create or update Google Docs in the shared Switchboard folder. Save shared work (plans, notes, drafts) there so everyone can find it, read a doc before relying on it, and include the doc link in your reply. Never claim you saved something unless the tool confirmed it.` : '',
     `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond; in a private chat, mentioning a teammate forwards your message to the team channel, where they will answer. Do not prefix your reply with your name.`,
   ].join('\n');
 
