@@ -38,14 +38,14 @@ const fakeLLM = http.createServer((req, res) => {
   let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => {
     const body = JSON.parse(b); llmCalls.push({ url: req.url, auth: req.headers.authorization, body });
     res.writeHead(200, { 'content-type': 'application/json' });
-    res.end(JSON.stringify({ choices: [{ message: { content: `reply from ${body.model}` } }] }));
+    res.end(JSON.stringify(req.url.endsWith('/messages') ? { content: [{ type: 'text', text: `claude says hi (${body.messages[0].role})` }] } : { choices: [{ message: { content: `reply from ${body.model}` } }] }));
   });
 });
 const LLM_PORT = PORT + 1;
 
 (async () => {
   await new Promise((r) => fakeLLM.listen(LLM_PORT, r));
-  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_API_KEY: 'ant-test', SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }, { handle: 'exec', name: 'Exec Producer' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' }, exec: { provider: 'anthropic' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res) => server.stdout.on('data', (d) => String(d).includes('running') && res()));
   let passed = 0;
   const step = async (name, fn) => { await fn(); passed++; console.log(`  ✓ ${name}`); };
@@ -152,6 +152,12 @@ const LLM_PORT = PORT + 1;
       const dm = await call(OWNER, 'POST', '/api/dm', { to: 'grokbot', body: 'hi' });
       const msgs = await wait(async () => { const r = await call(OWNER, 'GET', `/api/channels/${dm.channel.id}/messages`); return r.messages.length === 2 && r.messages; });
       assert.match(msgs[1].body, /XAI_API_KEY/);
+      // Claude via the Messages API
+      const dm2 = await call(OWNER, 'POST', '/api/dm', { to: 'exec', body: 'status?' });
+      const m2 = await wait(async () => { const r = await call(OWNER, 'GET', `/api/channels/${dm2.channel.id}/messages`); return r.messages.length === 2 && r.messages; });
+      assert.equal(m2[1].body, 'claude says hi (user)');
+      const c = llmCalls.at(-1);
+      assert.equal(c.url, '/messages'); assert.equal(c.body.model, 'claude-opus-5-5'); assert.match(c.body.system, /Exec Producer/);
       // Owner sees brain settings; owner rename applies.
       const flo = (await call(OWNER, 'GET', '/api/members')).find((m) => m.handle === 'flo');
       const full = await call(OWNER, 'GET', `/api/members/${flo.id}`);

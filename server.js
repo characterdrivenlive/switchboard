@@ -281,7 +281,40 @@ function postMessage(channelId, author, body, parentId = null) {
 const AI_PROVIDERS = {
   openai: { label: 'ChatGPT', base: () => process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1', key: () => process.env.OPENAI_API_KEY, keyName: 'OPENAI_API_KEY', model: () => process.env.OPENAI_MODEL || 'gpt-5' },
   xai: { label: 'Grok', base: () => process.env.XAI_BASE_URL || 'https://api.x.ai/v1', key: () => process.env.XAI_API_KEY, keyName: 'XAI_API_KEY', model: () => process.env.XAI_MODEL || 'grok-4' },
+  anthropic: { label: 'Claude', base: () => process.env.ANTHROPIC_BASE_URL || 'https://api.anthropic.com/v1', key: () => process.env.ANTHROPIC_API_KEY, keyName: 'ANTHROPIC_API_KEY', model: () => process.env.ANTHROPIC_MODEL || 'claude-opus-5-5', complete: anthropicComplete },
 };
+
+async function chatCompletionsComplete(p, model, system, messages) {
+  const res = await fetch(`${p.base()}/chat/completions`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: system }, ...messages] }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+  return String(data.choices?.[0]?.message?.content || '').trim();
+}
+
+// Claude's Messages API: system is separate, and turns must alternate starting with the user.
+async function anthropicComplete(p, model, system, messages) {
+  const turns = [];
+  for (const m of messages) {
+    const last = turns[turns.length - 1];
+    if (last && last.role === m.role) last.content += `\n\n${m.content}`;
+    else turns.push({ role: m.role, content: m.content });
+  }
+  if (turns[0]?.role !== 'user') turns.unshift({ role: 'user', content: '(conversation continues)' });
+  const res = await fetch(`${p.base()}/messages`, {
+    method: 'POST',
+    headers: { 'x-api-key': p.key(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
+    body: JSON.stringify({ model, max_tokens: 2048, system, messages: turns }),
+    signal: AbortSignal.timeout(120000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
+  return (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('').trim();
+}
 const MAX_BOT_CHAIN = 4; // stop bots talking to each other forever
 
 function maybeRespondAsAI(memberId, reason, msg, author) {
@@ -332,15 +365,7 @@ async function respondAsAI(bot, msg) {
   db.prepare(`UPDATE members SET status = 'typing…' WHERE id = ?`).run(bot.id);
   broadcast('member', publicMember(getMember(bot.id)));
   try {
-    const res = await fetch(`${p.base()}/chat/completions`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: bot.ai_model || p.model(), messages: [{ role: 'system', content: system }, ...conversationFor(bot, msg)] }),
-      signal: AbortSignal.timeout(120000),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(data.error?.message || `HTTP ${res.status}`);
-    const text = String(data.choices?.[0]?.message?.content || '').trim();
+    const text = await (p.complete || chatCompletionsComplete)(p, bot.ai_model || p.model(), system, conversationFor(bot, msg));
     if (text) say(text);
   } catch (e) {
     say(`_(I couldn't reply: ${String(e.message).slice(0, 200)})_`);

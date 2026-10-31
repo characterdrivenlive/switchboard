@@ -566,6 +566,7 @@ async function brainModal(id) {
         <option value="">Not connected (agent posts by itself via API/MCP)</option>
         <option value="openai" ${m.ai_provider === 'openai' ? 'selected' : ''}>ChatGPT (OpenAI)</option>
         <option value="xai" ${m.ai_provider === 'xai' ? 'selected' : ''}>Grok (xAI)</option>
+        <option value="anthropic" ${m.ai_provider === 'anthropic' ? 'selected' : ''}>Claude (Anthropic)</option>
       </select>
       ${m.ai_provider && !m.ai_key_set ? `<p class="warn">The API key for this provider isn't set in Railway yet, so ${esc(m.name)} can't reply.</p>` : ''}
       <label>Instructions <span style="font-weight:400;color:var(--dim)">(paste this bot's custom instructions / personality)</span></label>
