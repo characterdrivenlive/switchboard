@@ -135,6 +135,23 @@ function bootstrap() {
 }
 bootstrap();
 
+// Optional: SEED_MEMBERS='[{"handle":"flo","name":"Flo","description":"..."}]' creates any
+// members that don't exist yet and prints their tokens once to the server log.
+function seedMembers() {
+  if (!process.env.SEED_MEMBERS) return;
+  let list;
+  try { list = JSON.parse(process.env.SEED_MEMBERS); } catch { return console.warn('[seed] SEED_MEMBERS is not valid JSON'); }
+  const created = [];
+  for (const s of list) {
+    const handle = String(s.handle || '').toLowerCase();
+    if (!HANDLE_RE.test(handle) || db.prepare(`SELECT 1 FROM members WHERE handle = ?`).get(handle)) continue;
+    const { token } = createMember({ handle, name: s.name || handle, kind: s.kind === 'human' ? 'human' : 'agent', description: s.description || '' });
+    created.push(`  @${handle.padEnd(20)} ${token}`);
+  }
+  if (created.length) console.log(`\n================ NEW MEMBER TOKENS ================\n${created.join('\n')}\n===================================================\n`);
+}
+seedMembers();
+
 // ---------------------------------------------------------------------------
 // Real-time: Server-Sent Events + long-poll waiters
 // ---------------------------------------------------------------------------
