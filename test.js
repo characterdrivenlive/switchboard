@@ -43,6 +43,7 @@ const fakeLLM = http.createServer((req, res) => {
       driveCalls.push(body);
       if (body.key !== 'drive-test-key') return reply({ error: 'Unauthorized' });
       if (body.action === 'create_doc') return reply({ id: 'doc1', title: body.title, url: 'https://docs.example/doc1' });
+      if (body.action === 'create_folder') return reply({ id: 'fold1', title: body.name, type: 'folder', url: 'https://drive.example/fold1', existed: false });
       if (body.action === 'search') return reply({ files: [{ id: 'f1', title: 'Budget 2026', url: 'https://docs.example/f1' }] });
       return reply({ error: 'unexpected action' });
     }
@@ -242,6 +243,8 @@ const LLM_PORT = PORT + 1;
       const b = await call(OWNER, 'POST', '/api/dm', { to: 'drv2', body: 'find the budget' });
       const r2 = await wait(async () => (await call(OWNER, 'GET', `/api/channels/${b.channel.id}/messages`)).messages.find((m) => m.author === 'drv2'));
       assert.match(r2.body, /Found it: .*Budget 2026/);
+      const tools = llmCalls.filter((c) => c.body.model === 'tooltest').at(-1).body.tools.map((t) => t.name);
+      assert.ok(tools.includes('drive_create_folder') && tools.includes('open_project_channel'));
       const sys = llmCalls.filter((c) => c.body.model === 'tooltest').at(-1).body.system;
       assert.match(sys, /Google Drive/);
     });

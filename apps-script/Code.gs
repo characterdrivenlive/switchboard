@@ -27,6 +27,7 @@ function handle(req) {
     case 'read': return read(req.file_id);
     case 'create_doc': return createDoc(req.title, req.content, req.folder_id);
     case 'update_doc': return updateDoc(req.file_id, req.content, req.mode);
+    case 'create_folder': return createFolder(req.name, req.parent_id);
     default: throw new Error('Unknown action: ' + req.action);
   }
 }
@@ -106,4 +107,15 @@ function updateDoc(id, content, mode) {
   if (mode === 'replace') body.setText(String(content || ''));
   else body.appendParagraph(String(content || ''));
   return info(file);
+}
+
+function createFolder(name, parentId) {
+  const parent = DriveApp.getFolderById(parentId || WRITE_FOLDER_ID);
+  if (!insideWriteFolder(parent)) throw new Error('Folders can only be created inside the Switchboard folder.');
+  const title = String(name || '').trim();
+  if (!title) throw new Error('A folder name is required.');
+  const existing = parent.getFoldersByName(title);
+  const existed = existing.hasNext();
+  const folder = existed ? existing.next() : parent.createFolder(title);
+  return { id: folder.getId(), title: folder.getName(), type: 'folder', url: folder.getUrl(), existed: existed };
 }

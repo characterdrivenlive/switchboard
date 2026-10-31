@@ -353,6 +353,8 @@ const DRIVE_TOOLS = [
     parameters: { type: 'object', properties: { file_id: { type: 'string' } }, required: ['file_id'] } },
   { name: 'drive_create_doc', description: 'Create a new Google Doc in the shared Switchboard folder (or one of its subfolders). Use plain text; separate paragraphs with blank lines.',
     parameters: { type: 'object', properties: { title: { type: 'string' }, content: { type: 'string' }, folder_id: { type: 'string', description: 'Optional subfolder of the Switchboard folder' } }, required: ['title', 'content'] } },
+  { name: 'drive_create_folder', description: 'Create a folder inside the shared Switchboard folder (or inside one of its subfolders), e.g. for a project. Use the exact name Joani gives. If it already exists, the existing folder is returned. Save that project\'s docs into it with drive_create_doc folder_id.',
+    parameters: { type: 'object', properties: { name: { type: 'string' }, parent_id: { type: 'string', description: 'Optional subfolder of the Switchboard folder' } }, required: ['name'] } },
   { name: 'drive_update_doc', description: 'Add to (mode "append", the default) or rewrite (mode "replace") a Google Doc inside the Switchboard folder.',
     parameters: { type: 'object', properties: { file_id: { type: 'string' }, content: { type: 'string' }, mode: { type: 'string', enum: ['append', 'replace'] } }, required: ['file_id', 'content'] } },
 ];
@@ -393,7 +395,7 @@ async function runTool(name, args, ctx = {}) {
   if (name === 'open_project_channel') {
     try { return openProjectChannel(args || {}, ctx); } catch (e) { return { error: e.message }; }
   }
-  const action = { drive_search: 'search', drive_list: 'list', drive_read: 'read', drive_create_doc: 'create_doc', drive_update_doc: 'update_doc' }[name];
+  const action = { drive_search: 'search', drive_list: 'list', drive_read: 'read', drive_create_doc: 'create_doc', drive_update_doc: 'update_doc', drive_create_folder: 'create_folder' }[name];
   if (!action) return { error: `Unknown tool ${name}` };
   try { return await driveCall(action, args || {}); } catch (e) { return { error: e.message }; }
 }
@@ -525,7 +527,7 @@ async function respondAsAI(bot, msg) {
     `\n---\nYou are @${bot.handle} in Switchboard, the team's shared chat. You are replying ${channel.is_dm ? 'in a direct message' : `in #${channel.name}`}.`,
     `Team members:\n${roster}`,
     (() => { const o = db.prepare(`SELECT handle, name FROM members WHERE role = 'owner'`).get(); return o ? `${o.name} (@${o.handle}) is the owner and boss of this team. Messages marked "@${o.handle}:" come directly from ${o.name}; talk to ${o.name} directly, never as if relaying to someone else.` : ''; })(),
-    driveEnabled() ? `You can use the team's Google Drive: search and read any of Joani's files, and create or update Google Docs in the shared Switchboard folder. Save shared work (plans, notes, drafts) there so everyone can find it, read a doc before relying on it, and include the doc link in your reply. Never claim you saved something unless the tool confirmed it.` : '',
+    driveEnabled() ? `You can use the team's Google Drive: search and read any of Joani's files, and create or update Google Docs in the shared Switchboard folder. Save shared work (plans, notes, drafts) there so everyone can find it. When Joani starts a project, create a project folder inside the Switchboard folder using the exact name she gives, and keep that project's docs in it. read a doc before relying on it, and include the doc link in your reply. Never claim you saved something unless the tool confirmed it.` : '',
     `For a new project or a big piece of work, you can open a dedicated project channel with open_project_channel and invite the teammates who should work on it.`,
     `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond; in a private chat, mentioning a teammate forwards your message to the team channel, where they will answer. Do not prefix your reply with your name.`,
   ].join('\n');
