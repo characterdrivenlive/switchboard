@@ -911,5 +911,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 applyAIConfig();
+if (driveEnabled()) {
+  driveCall('list', {})
+    .then((r) => console.log(`[drive] connected: can write to "${r.folder}" (${r.files.length} files)`))
+    .catch((e) => console.warn(`[drive] not working: ${e.message}`));
+}
 server.listen(PORT, () => console.log(`Switchboard running on http://localhost:${PORT}`));
 module.exports = server;
