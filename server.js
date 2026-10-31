@@ -170,6 +170,24 @@ function seedMembers() {
 }
 seedMembers();
 
+// Optional: SEED_CHANNELS='[{"name":"joani-desk","topic":"...","members":"all"}]' creates missing channels.
+function seedChannels() {
+  if (!process.env.SEED_CHANNELS) return;
+  let list;
+  try { list = JSON.parse(process.env.SEED_CHANNELS); } catch { return console.warn('[seed] SEED_CHANNELS is not valid JSON'); }
+  for (const c of list) {
+    const name = String(c.name || '').toLowerCase();
+    if (!CHANNEL_RE.test(name) || name.startsWith('dm-') || db.prepare(`SELECT 1 FROM channels WHERE name = ?`).get(name)) continue;
+    const id = Number(db.prepare(`INSERT INTO channels (name, topic, created_at) VALUES (?,?,?)`).run(name, String(c.topic || ''), now()).lastInsertRowid);
+    const members = c.members === 'all'
+      ? db.prepare(`SELECT id FROM members WHERE status != 'removed'`).all()
+      : db.prepare(`SELECT id FROM members WHERE handle IN (${(c.members || []).map(() => '?').join(',') || 'NULL'})`).all(...(c.members || []));
+    for (const m of members) joinChannel(id, m.id);
+    console.log(`[seed] created #${name} with ${members.length} members`);
+  }
+}
+seedChannels();
+
 // Optional: AI_CONFIG='{"flo":{"provider":"openai","model":"gpt-5"}}' sets each bot's brain on boot.
 // A prompt here is only used if the bot has no instructions yet (UI edits are never overwritten).
 function applyAIConfig() {
