@@ -165,6 +165,17 @@ const LLM_PORT = PORT + 1;
       const full = await call(OWNER, 'GET', `/api/members/${flo.id}`);
       assert.equal(full.ai_provider, 'openai'); assert.equal(full.ai_key_set, true);
     });
+    await step('Exec Producer answers a team call last, with everyone else\'s replies in view', async () => {
+      const wait = async (fn) => { for (let i = 0; i < 60; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
+      const before = llmCalls.length;
+      const root = await call(OWNER, 'POST', '/api/channels/general/messages', { body: '@channel quick check-in please' });
+      await wait(async () => (await call(OWNER, 'GET', '/api/channels/general/messages')).messages.some((m) => m.author === 'exec' && m.id > root.id));
+      const execCall = llmCalls.slice(before).find((c) => c.url === '/messages');
+      const seen = execCall.body.messages.map((m) => m.content).join('\n');
+      assert.match(seen, /@flo: reply from gpt-5/, 'exec saw Flo\'s answer');
+      const msgs = (await call(OWNER, 'GET', '/api/channels/general/messages')).messages.filter((m) => m.id > root.id);
+      assert.equal(msgs.at(-1).author, 'exec', 'exec spoke last');
+    });
     await step('DMs stay private: mentioning someone in a DM does not pull them in', async () => {
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
       const dm = await call(OWNER, 'POST', '/api/dm', { to: 'flo', body: 'hey @grokbot and @exec, thoughts?' });

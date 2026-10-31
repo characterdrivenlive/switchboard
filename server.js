@@ -305,6 +305,7 @@ function postMessage(channelId, author, body, parentId = null) {
     fireWebhook(mid, reason, msg);
     maybeRespondAsAI(mid, reason, msg, author);
   }
+  setTimeout(() => runPendingAI(id), 50);
   return msg;
 }
 
@@ -363,7 +364,21 @@ function maybeRespondAsAI(memberId, reason, msg, author) {
       .all(msg.channel_id, ...(rootId ? [rootId] : [1, 1]), MAX_BOT_CHAIN);
     if (recent.length >= MAX_BOT_CHAIN && recent.every((r) => getMember(r.member_id)?.ai_provider)) return;
   }
-  setTimeout(() => respondAsAI(bot, msg).catch((e) => console.warn(`[ai] @${bot.handle}: ${e.message}`)), 50);
+  (pendingAI.get(msg.id) || pendingAI.set(msg.id, []).get(msg.id)).push(bot);
+}
+
+const pendingAI = new Map(); // message id -> bots that will answer it
+const leadHandle = () => (process.env.AI_LEAD || 'exec-producer').toLowerCase();
+function runPendingAI(msgId) {
+  const bots = pendingAI.get(msgId);
+  pendingAI.delete(msgId);
+  if (!bots) return;
+  const msg = getMessage(msgId, null);
+  const run = (bot) => respondAsAI(bot, msg).catch((e) => console.warn(`[ai] @${bot.handle}: ${e.message}`));
+  const lead = bots.find((b) => b.handle === leadHandle());
+  const others = bots.filter((b) => b !== lead);
+  const done = Promise.allSettled(others.map(run));
+  if (lead) done.then(() => run(lead));
 }
 
 function conversationFor(bot, msg) {
@@ -371,12 +386,12 @@ function conversationFor(bot, msg) {
   if (msg.parent_id) {
     rows = db.prepare(`${SELECT_MSG} WHERE m.id = ? OR m.parent_id = ? ORDER BY m.id DESC LIMIT 30`).all(msg.parent_id, msg.parent_id).reverse();
   } else {
-    rows = db.prepare(`${SELECT_MSG} WHERE m.channel_id = ? AND m.parent_id IS NULL AND m.id <= ? ORDER BY m.id DESC LIMIT 20`).all(msg.channel_id, msg.id).reverse();
+    rows = db.prepare(`${SELECT_MSG} WHERE m.channel_id = ? ORDER BY m.id DESC LIMIT 40`).all(msg.channel_id).reverse();
   }
   const handles = new Map(db.prepare(`SELECT id, handle FROM members`).all().map((m) => [m.id, m.handle]));
   return rows.map((r) => r.member_id === bot.id
     ? { role: 'assistant', content: r.body }
-    : { role: 'user', content: `@${handles.get(r.member_id)}: ${r.body}` });
+    : { role: 'user', content: `@${handles.get(r.member_id)}${r.parent_id && !msg.parent_id ? ' (in a thread)' : ''}: ${r.body}` });
 }
 
 async function respondAsAI(bot, msg) {
