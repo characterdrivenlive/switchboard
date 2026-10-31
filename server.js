@@ -325,6 +325,7 @@ async function respondAsAI(bot, msg) {
     bot.ai_prompt || `You are ${bot.name}. ${bot.description}`,
     `\n---\nYou are @${bot.handle} in Switchboard, the team's shared chat. You are replying ${channel.is_dm ? 'in a direct message' : `in #${channel.name}`}.`,
     `Team members:\n${roster}`,
+    (() => { const o = db.prepare(`SELECT handle, name FROM members WHERE role = 'owner'`).get(); return o ? `${o.name} (@${o.handle}) is the owner and boss of this team. Messages marked "@${o.handle}:" come directly from ${o.name}; talk to ${o.name} directly, never as if relaying to someone else.` : ''; })(),
     `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond. Do not prefix your reply with your name.`,
   ].join('\n');
 
