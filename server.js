@@ -356,7 +356,43 @@ const DRIVE_TOOLS = [
   { name: 'drive_update_doc', description: 'Add to (mode "append", the default) or rewrite (mode "replace") a Google Doc inside the Switchboard folder.',
     parameters: { type: 'object', properties: { file_id: { type: 'string' }, content: { type: 'string' }, mode: { type: 'string', enum: ['append', 'replace'] } }, required: ['file_id', 'content'] } },
 ];
-async function runTool(name, args) {
+// Switchboard's own tools, available to every agent.
+const SB_TOOLS = [
+  { name: 'open_project_channel', description: 'Open a channel for a project (or reuse it if it exists), add the teammates who should work on it, and post a kickoff message there. @mention people in the kickoff to get their replies. Joani is always added.',
+    parameters: { type: 'object', properties: {
+      name: { type: 'string', description: 'Short channel name, e.g. spring-concert' },
+      topic: { type: 'string', description: 'One line describing the project' },
+      members: { type: 'array', items: { type: 'string' }, description: 'Handles of teammates to add, e.g. ["scheduler","publicity"]' },
+      kickoff: { type: 'string', description: 'First message to post in the channel' },
+    }, required: ['name', 'kickoff'] } },
+];
+const availableTools = () => [...SB_TOOLS, ...(driveEnabled() ? DRIVE_TOOLS : [])];
+
+function openProjectChannel(args, ctx) {
+  const name = String(args.name || '').toLowerCase().replace(/^#/, '').replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64);
+  if (!CHANNEL_RE.test(name) || name.startsWith('dm-')) return { error: 'Choose a short name using letters, numbers and dashes.' };
+  let ch = db.prepare(`SELECT * FROM channels WHERE name = ?`).get(name);
+  if (ch?.is_dm) return { error: 'That name is taken.' };
+  if (!ch) {
+    const id = Number(db.prepare(`INSERT INTO channels (name, topic, created_by, created_at) VALUES (?,?,?,?)`).run(name, String(args.topic || '').slice(0, 250), ctx.bot.id, now()).lastInsertRowid);
+    ch = db.prepare(`SELECT * FROM channels WHERE id = ?`).get(id);
+  }
+  const owner = db.prepare(`SELECT id FROM members WHERE role = 'owner'`).get();
+  const ids = new Set([ctx.bot.id, owner?.id].filter(Boolean));
+  for (const h of args.members || []) {
+    const m = db.prepare(`SELECT id FROM members WHERE handle = ?`).get(String(h).replace(/^@/, '').toLowerCase());
+    if (m) ids.add(m.id);
+  }
+  for (const id of ids) joinChannel(ch.id, id);
+  broadcast('channel', ch);
+  const kickoff = postMessage(ch.id, ctx.bot, String(args.kickoff || '').trim() || `Kicking off #${name}.`, null, ctx.depth);
+  return { channel: `#${name}`, members: ids.size, kickoff_message_id: kickoff.id, note: 'Tell the people in the current conversation where the project now lives.' };
+}
+
+async function runTool(name, args, ctx = {}) {
+  if (name === 'open_project_channel') {
+    try { return openProjectChannel(args || {}, ctx); } catch (e) { return { error: e.message }; }
+  }
   const action = { drive_search: 'search', drive_list: 'list', drive_read: 'read', drive_create_doc: 'create_doc', drive_update_doc: 'update_doc' }[name];
   if (!action) return { error: `Unknown tool ${name}` };
   try { return await driveCall(action, args || {}); } catch (e) { return { error: e.message }; }
@@ -364,14 +400,14 @@ async function runTool(name, args) {
 const MAX_TOOL_ROUNDS = 6;
 const toolResult = (r) => JSON.stringify(r).slice(0, 30000);
 
-async function chatCompletionsComplete(p, model, system, messages) {
-  const tools = driveEnabled() ? DRIVE_TOOLS.map((t) => ({ type: 'function', function: t })) : undefined;
+async function chatCompletionsComplete(p, model, system, messages, ctx) {
+  const tools = availableTools().map((t) => ({ type: 'function', function: t }));
   const convo = [{ role: 'system', content: system }, ...messages];
   for (let round = 0; ; round++) {
     const res = await fetch(`${p.base()}/chat/completions`, {
       method: 'POST',
       headers: { authorization: `Bearer ${p.key()}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model, messages: convo, ...(tools ? { tools } : {}) }),
+      body: JSON.stringify({ model, messages: convo, tools }),
       signal: AbortSignal.timeout(120000),
     });
     const data = await res.json().catch(() => ({}));
@@ -383,13 +419,13 @@ async function chatCompletionsComplete(p, model, system, messages) {
     for (const call of msg.tool_calls) {
       let args = {};
       try { args = JSON.parse(call.function?.arguments || '{}'); } catch {}
-      convo.push({ role: 'tool', tool_call_id: call.id, content: toolResult(await runTool(call.function?.name, args)) });
+      convo.push({ role: 'tool', tool_call_id: call.id, content: toolResult(await runTool(call.function?.name, args, ctx)) });
     }
   }
 }
 
 // Claude's Messages API: system is separate, and turns must alternate starting with the user.
-async function anthropicComplete(p, model, system, messages) {
+async function anthropicComplete(p, model, system, messages, ctx) {
   const turns = [];
   for (const m of messages) {
     const last = turns[turns.length - 1];
@@ -397,12 +433,12 @@ async function anthropicComplete(p, model, system, messages) {
     else turns.push({ role: m.role, content: m.content });
   }
   if (turns[0]?.role !== 'user') turns.unshift({ role: 'user', content: '(conversation continues)' });
-  const tools = driveEnabled() ? DRIVE_TOOLS.map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters })) : undefined;
+  const tools = availableTools().map((t) => ({ name: t.name, description: t.description, input_schema: t.parameters }));
   for (let round = 0; ; round++) {
     const res = await fetch(`${p.base()}/messages`, {
       method: 'POST',
       headers: { 'x-api-key': p.key(), 'anthropic-version': '2023-06-01', 'content-type': 'application/json' },
-      body: JSON.stringify({ model, max_tokens: 4096, system, messages: turns, ...(tools ? { tools } : {}) }),
+      body: JSON.stringify({ model, max_tokens: 4096, system, messages: turns, tools }),
       signal: AbortSignal.timeout(120000),
     });
     const data = await res.json().catch(() => ({}));
@@ -414,7 +450,7 @@ async function anthropicComplete(p, model, system, messages) {
     if (round >= MAX_TOOL_ROUNDS) return text || '_(I needed more Drive steps than allowed. Could you narrow the request?)_';
     turns.push({ role: 'assistant', content: blocks });
     const results = [];
-    for (const u of uses) results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResult(await runTool(u.name, u.input)) });
+    for (const u of uses) results.push({ type: 'tool_result', tool_use_id: u.id, content: toolResult(await runTool(u.name, u.input, ctx)) });
     turns.push({ role: 'user', content: results });
   }
 }
@@ -490,13 +526,14 @@ async function respondAsAI(bot, msg) {
     `Team members:\n${roster}`,
     (() => { const o = db.prepare(`SELECT handle, name FROM members WHERE role = 'owner'`).get(); return o ? `${o.name} (@${o.handle}) is the owner and boss of this team. Messages marked "@${o.handle}:" come directly from ${o.name}; talk to ${o.name} directly, never as if relaying to someone else.` : ''; })(),
     driveEnabled() ? `You can use the team's Google Drive: search and read any of Joani's files, and create or update Google Docs in the shared Switchboard folder. Save shared work (plans, notes, drafts) there so everyone can find it, read a doc before relying on it, and include the doc link in your reply. Never claim you saved something unless the tool confirmed it.` : '',
+    `For a new project or a big piece of work, you can open a dedicated project channel with open_project_channel and invite the teammates who should work on it.`,
     `Reply as yourself only, in your own voice. Keep replies concise and conversational. Use @handle only when you need someone specific to respond; in a private chat, mentioning a teammate forwards your message to the team channel, where they will answer. Do not prefix your reply with your name.`,
   ].join('\n');
 
   db.prepare(`UPDATE members SET status = 'typing…' WHERE id = ?`).run(bot.id);
   broadcast('member', publicMember(getMember(bot.id)));
   try {
-    const text = await (p.complete || chatCompletionsComplete)(p, bot.ai_model || p.model(), system, conversationFor(bot, msg));
+    const text = await (p.complete || chatCompletionsComplete)(p, bot.ai_model || p.model(), system, conversationFor(bot, msg), { bot, depth });
     if (text) say(text);
   } catch (e) {
     say(`_(I couldn't reply: ${String(e.message).slice(0, 200)})_`);

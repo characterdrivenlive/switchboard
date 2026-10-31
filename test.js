@@ -55,6 +55,11 @@ const fakeLLM = http.createServer((req, res) => {
       }
       return reply({ content: [{ type: 'text', text: `claude says hi (${body.messages[0].role})` }] });
     }
+    if (body.model === 'projtest') {
+      const tool = body.messages.find((m) => m.role === 'tool');
+      if (!tool) return reply({ choices: [{ message: { content: null, tool_calls: [{ id: 'p1', type: 'function', function: { name: 'open_project_channel', arguments: JSON.stringify({ name: 'Spring Concert', topic: 'Benefit concert', members: ['flo'], kickoff: '@flo can you draft the run of show?' }) } }] } }] });
+      return reply({ choices: [{ message: { content: `Opened ${JSON.parse(tool.content).channel}` } }] });
+    }
     if (body.model === 'tooltest') {
       const tool = body.messages.find((m) => m.role === 'tool');
       if (!tool) return reply({ choices: [{ message: { content: null, tool_calls: [{ id: 'c1', type: 'function', function: { name: 'drive_create_doc', arguments: JSON.stringify({ title: 'Concert plan', content: 'Step one' }) } }] } }] });
@@ -67,7 +72,7 @@ const LLM_PORT = PORT + 1;
 
 (async () => {
   await new Promise((r) => fakeLLM.listen(LLM_PORT, r));
-  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_API_KEY: 'ant-test', DRIVE_SCRIPT_URL: `http://localhost:${LLM_PORT}/drive`, DRIVE_SCRIPT_KEY: 'drive-test-key', AI_LEAD: 'exec', SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }, { handle: 'exec', name: 'Exec Producer' }, { handle: 'drv', name: 'Drive GPT' }, { handle: 'drv2', name: 'Drive Claude' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' }, exec: { provider: 'anthropic' }, drv: { provider: 'openai', model: 'tooltest' }, drv2: { provider: 'anthropic', model: 'tooltest' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
+  const server = spawn(process.execPath, ['--no-warnings', path.join(__dirname, 'server.js')], { env: { ...process.env, PORT, DATA_DIR, OWNER_TOKEN: OWNER, OWNER_NAME: 'Joan', OWNER_HANDLE: 'joan', OPENAI_API_KEY: 'sk-test', OPENAI_BASE_URL: `http://localhost:${LLM_PORT}`, XAI_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_BASE_URL: `http://localhost:${LLM_PORT}`, ANTHROPIC_API_KEY: 'ant-test', DRIVE_SCRIPT_URL: `http://localhost:${LLM_PORT}/drive`, DRIVE_SCRIPT_KEY: 'drive-test-key', AI_LEAD: 'exec', SEED_MEMBERS: JSON.stringify([{ handle: 'flo', name: 'Flo' }, { handle: 'grokbot', name: 'Grok Bot' }, { handle: 'exec', name: 'Exec Producer' }, { handle: 'drv', name: 'Drive GPT' }, { handle: 'drv2', name: 'Drive Claude' }, { handle: 'pm', name: 'Project Manager' }]), AI_CONFIG: JSON.stringify({ flo: { provider: 'openai', prompt: 'You are Flo, a warm stage manager.' }, grokbot: { provider: 'xai' }, exec: { provider: 'anthropic' }, drv: { provider: 'openai', model: 'tooltest' }, drv2: { provider: 'anthropic', model: 'tooltest' }, pm: { provider: 'openai', model: 'projtest' } }) }, stdio: ['ignore', 'pipe', 'inherit'] });
   await new Promise((res) => server.stdout.on('data', (d) => String(d).includes('running') && res()));
   let passed = 0;
   const step = async (name, fn) => { await fn(); passed++; console.log(`  ✓ ${name}`); };
@@ -239,6 +244,16 @@ const LLM_PORT = PORT + 1;
       assert.match(r2.body, /Found it: .*Budget 2026/);
       const sys = llmCalls.filter((c) => c.body.model === 'tooltest').at(-1).body.system;
       assert.match(sys, /Google Drive/);
+    });
+    await step('An agent can open a project channel and pull teammates in', async () => {
+      const wait = async (fn) => { for (let i = 0; i < 60; i++) { const v = await fn(); if (v) return v; await new Promise((r) => setTimeout(r, 100)); } throw new Error('timed out'); };
+      const dm = await call(OWNER, 'POST', '/api/dm', { to: 'pm', body: 'start the spring concert project' });
+      const r = await wait(async () => (await call(OWNER, 'GET', `/api/channels/${dm.channel.id}/messages`)).messages.find((m) => m.author === 'pm'));
+      assert.equal(r.body, 'Opened #spring-concert');
+      const ch = await call(OWNER, 'GET', '/api/channels/spring-concert');
+      assert.deepEqual(ch.members.map((m) => m.handle).sort(), ['flo', 'joan', 'pm']);
+      const msgs = await wait(async () => { const m = (await call(OWNER, 'GET', '/api/channels/spring-concert/messages')).messages; return m.some((x) => x.author === 'flo') && m; });
+      assert.equal(msgs[0].author, 'pm'); assert.match(msgs[0].body, /run of show/);
     });
     await step('web UI is served', async () => {
       const html = await (await fetch(BASE + '/')).text();

@@ -32,7 +32,9 @@
   .err { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 8px; }
 
   /* Layout */
-  #app { display: grid; grid-template-columns: 260px 1fr auto; height: 100%; }
+  #app { display: grid; grid-template-columns: 260px 1fr auto; grid-template-rows: 100%; height: 100%; overflow: hidden; }
+  #main, #thread, #side { min-height: 0; }
+  #main { position: relative; }
   #side { background: var(--side); color: var(--side-text); display: flex; flex-direction: column; overflow: hidden; }
   #side header { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); display: flex; align-items: center; gap: 10px; }
   #side header .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), #ec4899); display: grid; place-items: center; color: #fff; font-weight: 800; }
@@ -78,6 +80,10 @@
   .body pre code { border: 0; padding: 0; color: inherit; background: none; }
   .body a { color: #1d9bd1; }
   .body blockquote { margin: 2px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--dim); }
+  .body.clamp { max-height: 13.5em; overflow: hidden; -webkit-mask-image: linear-gradient(#000 70%, transparent); mask-image: linear-gradient(#000 70%, transparent); }
+  .more { background: none; border: 0; color: #1d9bd1; font-size: 13px; font-weight: 600; padding: 2px 0; }
+  .more:hover { text-decoration: underline; }
+  #jump { position: absolute; left: 50%; transform: translateX(-50%); bottom: 96px; background: var(--accent); color: #fff; border: 0; border-radius: 16px; padding: 6px 14px; font-size: 13px; font-weight: 600; box-shadow: 0 4px 12px rgba(0,0,0,.2); z-index: 5; }
   .mention { background: rgba(29,155,209,.15); color: #1d9bd1; border-radius: 3px; padding: 0 2px; font-weight: 600; }
   .mention.me { background: var(--mention); color: var(--mention-text); }
   .reacts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
@@ -174,6 +180,7 @@
       <input id="search" placeholder="Search messages…">
     </header>
     <div class="msgs" id="msgs"></div>
+    <button id="jump" class="hidden">↓ Jump to latest</button>
     <div class="composer" id="composer">
       <div class="box"><textarea id="input" rows="1" placeholder="Message"></textarea><button class="send" id="sendBtn">➤</button></div>
       <div class="hint">Enter to send · Shift+Enter for newline · @handle to mention · `code` · **bold**</div>
@@ -191,7 +198,7 @@
 
 <script>
 const $ = (s, el = document) => el.querySelector(s);
-const state = { token: localStorage.getItem('sb_token'), me: null, members: new Map(), channels: [], view: null, messages: [], thread: null, inbox: [] };
+const state = { expanded: new Set(), token: localStorage.getItem('sb_token'), me: null, members: new Map(), channels: [], view: null, messages: [], thread: null, inbox: [] };
 
 // ---------- API ----------
 async function api(method, path, body) {
@@ -227,6 +234,8 @@ const initials = (m) => (m?.name || m?.handle || '?').trim().split(/\s+/).map((w
 const avatar = (m) => `<div class="av ${m?.kind === 'agent' ? 'agent' : ''}" style="background:${m?.color || '#888'}">${esc(initials(m))}</div>`;
 const time = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
 const dayLabel = (ms) => { const d = new Date(ms), t = new Date(); const y = new Date(); y.setDate(t.getDate() - 1); if (d.toDateString() === t.toDateString()) return 'Today'; if (d.toDateString() === y.toDateString()) return 'Yesterday'; return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }); };
+const LONG_CHARS = 700, LONG_LINES = 9;
+const isLong = (m) => !state.expanded.has(m.id) && (m.body.length > LONG_CHARS || m.body.split('\n').length > LONG_LINES);
 const mentionsMe = (body) => new RegExp(`@(${state.me.handle}|channel|here|all)\\b`, 'i').test(body);
 
 function renderMsg(m, prev, { inThread = false, showWhere = false } = {}) {
@@ -240,7 +249,8 @@ function renderMsg(m, prev, { inThread = false, showWhere = false } = {}) {
     ${avatar(author)}
     <div>
       <div class="meta"><b>${esc(author?.name || m.author)}</b>${author?.kind === 'agent' ? '<span class="tag">AGENT</span>' : ''}<time title="${new Date(m.created_at).toLocaleString()}">${time(m.created_at)}</time>${where}</div>
-      <div class="body">${md(m.body)}${m.edited_at ? ' <span class="edited">(edited)</span>' : ''}</div>
+      <div class="body${isLong(m) ? ' clamp' : ''}">${md(m.body)}${m.edited_at ? ' <span class="edited">(edited)</span>' : ''}</div>
+      ${isLong(m) ? '<button class="more" data-act="more">Show more</button>' : (state.expanded.has(m.id) && (m.body.length > LONG_CHARS || m.body.split('\n').length > LONG_LINES) ? '<button class="more" data-act="less">Show less</button>' : '')}
       ${reacts}${replies}
     </div>
     <div class="actions">
@@ -308,6 +318,7 @@ async function openChannel(ref) {
   $('#composer').classList.remove('hidden');
   $('#input').placeholder = ch.is_dm ? `Message ${title}` : `Message #${ch.name}`;
   renderMessages(true);
+  $('#jump').classList.add('hidden');
   location.hash = ch.is_dm ? `dm/${ch.id}` : ch.name;
   $('#side').classList.remove('open');
   markRead();
@@ -378,7 +389,9 @@ function connect() {
       if (root) { root.reply_count = (root.reply_count || 0) + 1; if (state.view?.id === m.channel_id) renderMessages(); }
       if (state.thread?.root.id === m.parent_id) { state.thread.replies.push(m); renderThread(true); }
     } else if (state.view?.type === 'channel' && state.view.id === m.channel_id) {
+      const wasNear = nearBottom($('#msgs'));
       state.messages.push(m); renderMessages(m.member_id === state.me.id);
+      if (!wasNear && m.member_id !== state.me.id) { $('#jump').textContent = '↓ New messages'; $('#jump').classList.remove('hidden'); }
       if (document.hasFocus()) markRead(); else bumpUnread(m);
     } else if (m.member_id !== state.me.id) bumpUnread(m);
   });
@@ -626,6 +639,13 @@ function onMsgAction(container) {
     if (r) return api('POST', `/api/messages/${id}/reactions`, { emoji: r.dataset.react || r.dataset.quick }).catch((x) => toast(x.message));
     const act = e.target.closest('[data-act]')?.dataset.act;
     if (act === 'thread') return openThread(id);
+    if (act === 'more' || act === 'less') {
+      if (act === 'more') state.expanded.add(id); else state.expanded.delete(id);
+      const keep = $('#msgs').scrollTop;
+      if (state.view?.type === 'channel') { renderMessages(); $('#msgs').scrollTop = keep; }
+      renderThread();
+      return;
+    }
     if (act === 'emoji') { const em = prompt('Emoji to react with:', '🎉'); if (em) api('POST', `/api/messages/${id}/reactions`, { emoji: em }); }
     if (act === 'edit') {
       const cur = [...state.messages, ...(state.thread ? [state.thread.root, ...state.thread.replies] : [])].find((x) => x.id === id);
@@ -667,6 +687,10 @@ window.addEventListener('focus', () => {
   if (state.view?.type === 'channel') markRead();
   else { refreshChannels(); refreshInbox(); }
 });
+
+const nearBottom = (el) => el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+$('#msgs').addEventListener('scroll', (e) => { if (nearBottom(e.target)) { $('#jump').classList.add('hidden'); $('#jump').textContent = '↓ Jump to latest'; } else if (state.view?.type === 'channel') $('#jump').classList.remove('hidden'); });
+$('#jump').onclick = () => { const el = $('#msgs'); el.scrollTop = el.scrollHeight; $('#jump').classList.add('hidden'); $('#jump').textContent = '↓ Jump to latest'; };
 
 // Infinite scroll back through history
 $('#msgs').addEventListener('scroll', async (e) => {
