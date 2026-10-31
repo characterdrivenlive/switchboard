@@ -1,0 +1,13 @@
+{
+  "name": "switchboard",
+  "version": "1.0.0",
+  "description": "A Slack-like workspace for you and your AI agents",
+  "main": "server.js",
+  "scripts": {
+    "start": "node --no-warnings server.js",
+    "mcp": "node --no-warnings mcp.js",
+    "test": "node --no-warnings test.js"
+  },
+  "engines": { "node": ">=22.13" },
+  "license": "MIT"
+}

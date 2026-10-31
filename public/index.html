@@ -1,0 +1,667 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switchboard</title>
+<style>
+  :root {
+    --side: #1f1235; --side-hi: #3b2463; --side-text: #cfc3e6; --side-dim: #9384ad;
+    --accent: #7c3aed; --accent-2: #a78bfa; --bg: #fff; --text: #1d1c1d; --dim: #616061;
+    --line: #e8e6ea; --hover: #f8f7fa; --mention: #fff4d6; --mention-text: #8a5a00; --danger: #c0392b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1a1d21; --text: #e8e8e8; --dim: #9a9b9e; --line: #2c2f34; --hover: #22252a; --mention: #3d3415; --mention-text: #f3c969; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--text); background: var(--bg); }
+  button { font: inherit; cursor: pointer; }
+  input, textarea, select { font: inherit; color: inherit; }
+  .hidden { display: none !important; }
+
+  /* Login */
+  #login { display: flex; align-items: center; justify-content: center; height: 100%; background: linear-gradient(135deg, #1f1235, #4c1d95); }
+  #login form { background: var(--bg); padding: 32px; border-radius: 12px; width: min(420px, 92vw); box-shadow: 0 20px 60px rgba(0,0,0,.35); }
+  #login h1 { margin: 0 0 4px; font-size: 24px; }
+  #login p { color: var(--dim); margin: 0 0 20px; font-size: 14px; }
+  .field { width: 100%; padding: 10px 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+  .btn { background: var(--accent); color: #fff; border: 0; padding: 9px 16px; border-radius: 8px; font-weight: 600; }
+  .btn:hover { filter: brightness(1.1); }
+  .btn.ghost { background: transparent; color: var(--text); border: 1px solid var(--line); }
+  .btn.danger { background: var(--danger); }
+  .err { color: var(--danger); font-size: 13px; min-height: 18px; margin-top: 8px; }
+
+  /* Layout */
+  #app { display: grid; grid-template-columns: 260px 1fr auto; height: 100%; }
+  #side { background: var(--side); color: var(--side-text); display: flex; flex-direction: column; overflow: hidden; }
+  #side header { padding: 14px 16px; border-bottom: 1px solid rgba(255,255,255,.08); display: flex; align-items: center; gap: 10px; }
+  #side header .logo { width: 30px; height: 30px; border-radius: 8px; background: linear-gradient(135deg, var(--accent), #ec4899); display: grid; place-items: center; color: #fff; font-weight: 800; }
+  #side header b { color: #fff; font-size: 16px; }
+  #side nav { overflow-y: auto; flex: 1; padding: 8px 0 16px; }
+  .sec { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px 4px; font-size: 13px; color: var(--side-dim); font-weight: 600; }
+  .sec button { background: none; border: 0; color: var(--side-dim); font-size: 18px; line-height: 1; padding: 0 4px; border-radius: 4px; }
+  .sec button:hover { background: var(--side-hi); color: #fff; }
+  .item { display: flex; align-items: center; gap: 8px; padding: 4px 16px; margin: 0 8px; border-radius: 6px; cursor: pointer; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .item:hover { background: rgba(255,255,255,.06); }
+  .item.active { background: var(--accent); color: #fff; }
+  .item.unread { color: #fff; font-weight: 700; }
+  .item .badge { margin-left: auto; background: #e01e5a; color: #fff; border-radius: 9px; font-size: 11px; padding: 0 7px; font-weight: 700; }
+  .item .hash { opacity: .7; width: 14px; text-align: center; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; border: 1.5px solid var(--side-dim); flex: none; }
+  .dot.on { background: #2bac76; border-color: #2bac76; }
+  .tag { font-size: 10px; padding: 0 5px; border-radius: 4px; background: rgba(167,139,250,.25); color: var(--accent-2); font-weight: 700; letter-spacing: .3px; }
+  #side footer { padding: 10px 16px; border-top: 1px solid rgba(255,255,255,.08); display: flex; align-items: center; gap: 10px; font-size: 13px; }
+  #side footer button { margin-left: auto; background: none; border: 0; color: var(--side-dim); }
+
+  /* Main */
+  #main { display: flex; flex-direction: column; min-width: 0; border-right: 1px solid var(--line); }
+  #main > header { height: 56px; padding: 0 20px; border-bottom: 1px solid var(--line); display: flex; align-items: center; gap: 12px; }
+  #main > header h2 { margin: 0; font-size: 17px; white-space: nowrap; }
+  #main > header .topic { color: var(--dim); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+  #search { margin-left: auto; width: 240px; padding: 6px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--hover); }
+  .msgs { flex: 1; overflow-y: auto; padding: 12px 0; }
+  .msg { display: grid; grid-template-columns: 40px 1fr; gap: 10px; padding: 4px 20px; position: relative; }
+  .msg:hover { background: var(--hover); }
+  .msg.cont { padding-top: 1px; padding-bottom: 1px; }
+  .msg.cont .av { visibility: hidden; height: 0; }
+  .msg.cont .meta { display: none; }
+  .msg.hl { background: var(--mention); }
+  .av { width: 38px; height: 38px; border-radius: 8px; color: #fff; display: grid; place-items: center; font-weight: 700; font-size: 15px; position: relative; }
+  .av.agent::after { content: '⚡'; position: absolute; right: -4px; bottom: -4px; font-size: 11px; background: var(--bg); border-radius: 50%; width: 16px; height: 16px; display: grid; place-items: center; }
+  .meta { display: flex; align-items: baseline; gap: 8px; }
+  .meta b { font-size: 15px; }
+  .meta time, .edited { color: var(--dim); font-size: 12px; }
+  .body { word-wrap: break-word; overflow-wrap: anywhere; }
+  .body p { margin: 0; }
+  .body pre { background: var(--hover); border: 1px solid var(--line); border-radius: 6px; padding: 8px 10px; overflow-x: auto; font-size: 13px; margin: 4px 0; white-space: pre-wrap; }
+  .body code { background: var(--hover); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; font-size: 13px; color: #e01e5a; }
+  .body pre code { border: 0; padding: 0; color: inherit; background: none; }
+  .body a { color: #1d9bd1; }
+  .body blockquote { margin: 2px 0; padding-left: 10px; border-left: 3px solid var(--line); color: var(--dim); }
+  .mention { background: rgba(29,155,209,.15); color: #1d9bd1; border-radius: 3px; padding: 0 2px; font-weight: 600; }
+  .mention.me { background: var(--mention); color: var(--mention-text); }
+  .reacts { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 4px; }
+  .react { border: 1px solid var(--line); background: var(--hover); border-radius: 12px; padding: 0 8px; font-size: 13px; }
+  .react.mine { border-color: #1d9bd1; background: rgba(29,155,209,.12); }
+  .replies { margin-top: 4px; color: #1d9bd1; font-size: 13px; font-weight: 600; cursor: pointer; display: inline-block; }
+  .replies:hover { text-decoration: underline; }
+  .actions { position: absolute; right: 16px; top: -12px; display: none; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 2px 6px rgba(0,0,0,.08); }
+  .msg:hover .actions { display: flex; }
+  .actions button { background: none; border: 0; padding: 4px 7px; font-size: 14px; color: var(--dim); }
+  .actions button:hover { background: var(--hover); color: var(--text); }
+  .day { display: flex; align-items: center; gap: 10px; color: var(--dim); font-size: 12px; font-weight: 600; margin: 12px 20px 4px; }
+  .day::before, .day::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+  .empty { color: var(--dim); text-align: center; margin-top: 18vh; padding: 0 20px; }
+  .empty h3 { color: var(--text); }
+
+  .composer { padding: 0 20px 18px; position: relative; }
+  .composer .box { border: 1px solid var(--line); border-radius: 10px; padding: 8px 10px; display: flex; gap: 8px; align-items: flex-end; }
+  .composer .box:focus-within { border-color: var(--dim); }
+  .composer textarea { flex: 1; resize: none; border: 0; outline: 0; background: transparent; max-height: 200px; min-height: 22px; }
+  .composer .send { background: var(--accent); color: #fff; border: 0; border-radius: 6px; padding: 4px 10px; }
+  .composer .hint { font-size: 11px; color: var(--dim); margin-top: 4px; }
+  .ac { position: absolute; bottom: 100%; left: 20px; background: var(--bg); border: 1px solid var(--line); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,.15); min-width: 240px; overflow: hidden; }
+  .ac div { padding: 6px 12px; cursor: pointer; display: flex; gap: 8px; align-items: center; }
+  .ac div.sel, .ac div:hover { background: var(--accent); color: #fff; }
+
+  /* Thread pane */
+  #thread { width: 400px; display: flex; flex-direction: column; }
+  #thread > header { height: 56px; padding: 0 16px; border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; }
+  #thread > header button { background: none; border: 0; font-size: 20px; color: var(--dim); }
+  .thread-count { padding: 6px 20px; color: var(--dim); font-size: 13px; border-bottom: 1px solid var(--line); }
+
+  /* Modal */
+  .modal-bg { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: grid; place-items: center; z-index: 50; }
+  .modal { background: var(--bg); border-radius: 12px; width: min(620px, 94vw); max-height: 90vh; overflow-y: auto; padding: 24px; }
+  .modal h3 { margin: 0 0 14px; }
+  .modal label { display: block; font-size: 13px; font-weight: 600; margin: 12px 0 4px; }
+  .modal .row { display: flex; gap: 8px; justify-content: flex-end; margin-top: 18px; }
+  .modal pre { background: var(--hover); border: 1px solid var(--line); border-radius: 8px; padding: 10px; font-size: 12px; white-space: pre-wrap; word-break: break-all; position: relative; }
+  .copy { position: absolute; top: 6px; right: 6px; font-size: 11px; padding: 2px 8px; border-radius: 4px; border: 1px solid var(--line); background: var(--bg); color: var(--text); }
+  .warn { background: var(--mention); color: var(--mention-text); padding: 8px 12px; border-radius: 8px; font-size: 13px; }
+  .agent-row { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+  .agent-row .av { width: 32px; height: 32px; font-size: 13px; }
+  .agent-row .info { flex: 1; min-width: 0; }
+  .agent-row .info small { color: var(--dim); display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .agent-row button { font-size: 12px; padding: 4px 10px; }
+  .tabs { display: flex; gap: 4px; margin: 14px 0 6px; }
+  .tabs button { border: 1px solid var(--line); background: none; border-radius: 6px; padding: 3px 10px; font-size: 12px; color: var(--text); }
+  .tabs button.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+  .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: #1d1c1d; color: #fff; padding: 8px 16px; border-radius: 8px; z-index: 60; font-size: 14px; }
+
+  @media (max-width: 900px) {
+    #app { grid-template-columns: 1fr; }
+    #side { position: fixed; inset: 0 30% 0 0; z-index: 40; transform: translateX(-100%); transition: transform .2s; }
+    #side.open { transform: none; }
+    #thread { position: fixed; inset: 0; z-index: 30; width: auto; background: var(--bg); }
+    #menu { display: inline-block !important; }
+  }
+  #menu { display: none; background: none; border: 0; font-size: 20px; color: var(--text); }
+</style>
+</head>
+<body>
+
+<div id="login" class="hidden">
+  <form id="loginForm">
+    <h1>⚡ Switchboard</h1>
+    <p>Your command center for working with AI agents. Paste your access token to sign in. On first run it's printed in the server log and saved to <code>data/owner_token.txt</code>.</p>
+    <input class="field" id="tokenInput" type="password" placeholder="sb_user_…" autocomplete="off" required>
+    <div class="err" id="loginErr"></div>
+    <button class="btn" style="width:100%;margin-top:8px">Sign in</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <aside id="side">
+    <header><div class="logo">⚡</div><b>Switchboard</b></header>
+    <nav>
+      <div class="item" data-view="inbox" id="inboxItem"><span class="hash">🔔</span>Activity<span class="badge hidden" id="inboxBadge"></span></div>
+      <div class="sec">Channels <button title="Create channel" id="newChannelBtn">+</button></div>
+      <div id="channelList"></div>
+      <div class="sec">Direct messages</div>
+      <div id="dmList"></div>
+      <div class="sec">Agents <button title="Add an agent" id="newAgentBtn">+</button></div>
+      <div class="item" id="manageAgentsItem"><span class="hash">⚙</span>Manage agents</div>
+    </nav>
+    <footer><span class="dot on"></span><span id="meLabel"></span><button id="logoutBtn" title="Sign out">⎋</button></footer>
+  </aside>
+
+  <section id="main">
+    <header>
+      <button id="menu">☰</button>
+      <h2 id="chanTitle"></h2>
+      <span class="topic" id="chanTopic" title="Click to edit topic"></span>
+      <input id="search" placeholder="Search messages…">
+    </header>
+    <div class="msgs" id="msgs"></div>
+    <div class="composer" id="composer">
+      <div class="box"><textarea id="input" rows="1" placeholder="Message"></textarea><button class="send" id="sendBtn">➤</button></div>
+      <div class="hint">Enter to send · Shift+Enter for newline · @handle to mention · `code` · **bold**</div>
+    </div>
+  </section>
+
+  <section id="thread" class="hidden">
+    <header><b>Thread</b><button id="closeThread">×</button></header>
+    <div class="msgs" id="threadMsgs"></div>
+    <div class="composer" id="threadComposer">
+      <div class="box"><textarea id="threadInput" rows="1" placeholder="Reply…"></textarea><button class="send" id="threadSend">➤</button></div>
+    </div>
+  </section>
+</div>
+
+<script>
+const $ = (s, el = document) => el.querySelector(s);
+const state = { token: localStorage.getItem('sb_token'), me: null, members: new Map(), channels: [], view: null, messages: [], thread: null, inbox: [] };
+
+// ---------- API ----------
+async function api(method, path, body) {
+  const res = await fetch(path, { method, headers: { authorization: `Bearer ${state.token}`, 'content-type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401) { logout(); throw new Error('Signed out'); }
+  if (!res.ok) throw new Error(data.error || res.statusText);
+  return data;
+}
+function toast(text) { const t = document.createElement('div'); t.className = 'toast'; t.textContent = text; document.body.append(t); setTimeout(() => t.remove(), 2500); }
+
+// ---------- Formatting ----------
+const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+function md(text) {
+  const blocks = [];
+  let s = esc(text).replace(/```(?:\w+)?\n?([\s\S]*?)```/g, (_, code) => { blocks.push(`<pre><code>${code.replace(/\n$/, '')}</code></pre>`); return `\u0000${blocks.length - 1}\u0000`; });
+  const inline = [];
+  s = s.replace(/`([^`\n]+)`/g, (_, c) => { inline.push(`<code>${c}</code>`); return `\u0001${inline.length - 1}\u0001`; });
+  s = s.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>')
+       .replace(/(^|[\s(])(https?:\/\/[^\s<)]+)/g, '$1<a href="$2" target="_blank" rel="noopener">$2</a>')
+       .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+       .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<i>$2</i>')
+       .replace(/(^|[\s(])_([^_\n]+)_/g, '$1<i>$2</i>')
+       .replace(/~~([^~\n]+)~~/g, '<s>$1</s>')
+       .replace(/^&gt; ?(.*)$/gm, '<blockquote>$1</blockquote>')
+       .replace(/(^|[^\w])@([a-z0-9][a-z0-9_-]*)/gi, (m, pre, h) => { const lh = h.toLowerCase(); const known = [...state.members.values()].some((x) => x.handle === lh) || ['channel','here','all'].includes(lh); return known ? `${pre}<span class="mention${lh === state.me.handle || ['channel','here','all'].includes(lh) ? ' me' : ''}">@${h}</span>` : m; })
+       .replace(/(^|\s)#([a-z0-9][a-z0-9_-]*)/g, (m, pre, n) => state.channels.some((c) => c.name === n && !c.is_dm) ? `${pre}<a href="#" data-goto="${n}">#${n}</a>` : m)
+       .replace(/\n/g, '<br>');
+  s = s.replace(/\u0001(\d+)\u0001/g, (_, i) => inline[i]).replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[i]);
+  return s.replace(/<\/blockquote><br>/g, '</blockquote>');
+}
+const initials = (m) => (m?.name || m?.handle || '?').trim().split(/\s+/).map((w) => w[0]).slice(0, 2).join('').toUpperCase();
+const avatar = (m) => `<div class="av ${m?.kind === 'agent' ? 'agent' : ''}" style="background:${m?.color || '#888'}">${esc(initials(m))}</div>`;
+const time = (ms) => new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+const dayLabel = (ms) => { const d = new Date(ms), t = new Date(); const y = new Date(); y.setDate(t.getDate() - 1); if (d.toDateString() === t.toDateString()) return 'Today'; if (d.toDateString() === y.toDateString()) return 'Yesterday'; return d.toLocaleDateString([], { weekday: 'long', month: 'long', day: 'numeric' }); };
+const mentionsMe = (body) => new RegExp(`@(${state.me.handle}|channel|here|all)\\b`, 'i').test(body);
+
+function renderMsg(m, prev, { inThread = false, showWhere = false } = {}) {
+  const author = state.members.get(m.member_id);
+  const cont = prev && prev.member_id === m.member_id && m.created_at - prev.created_at < 5 * 60000 && !showWhere && new Date(prev.created_at).toDateString() === new Date(m.created_at).toDateString();
+  const where = showWhere ? ` <span class="edited">in ${m.is_dm ? 'DM' : '#' + esc(m.channel)}${m.parent_id ? ' · thread' : ''}</span>` : '';
+  const reacts = m.reactions?.length ? `<div class="reacts">${m.reactions.map((r) => `<button class="react ${r.mine ? 'mine' : ''}" data-react="${esc(r.emoji)}" title="${esc(r.members.map((h) => '@' + h).join(', '))}">${esc(r.emoji)} ${r.count}</button>`).join('')}</div>` : '';
+  const replies = !inThread && m.reply_count ? `<span class="replies" data-thread="${m.id}">💬 ${m.reply_count} ${m.reply_count === 1 ? 'reply' : 'replies'}</span>` : '';
+  const mine = m.member_id === state.me.id;
+  return `<div class="msg ${cont ? 'cont' : ''} ${mentionsMe(m.body) && !mine ? 'hl' : ''}" data-id="${m.id}" data-ch="${m.channel_id}">
+    ${avatar(author)}
+    <div>
+      <div class="meta"><b>${esc(author?.name || m.author)}</b>${author?.kind === 'agent' ? '<span class="tag">AGENT</span>' : ''}<time title="${new Date(m.created_at).toLocaleString()}">${time(m.created_at)}</time>${where}</div>
+      <div class="body">${md(m.body)}${m.edited_at ? ' <span class="edited">(edited)</span>' : ''}</div>
+      ${reacts}${replies}
+    </div>
+    <div class="actions">
+      <button data-quick="✅" title="Approve">✅</button><button data-quick="👀" title="Looking">👀</button><button data-quick="👍" title="Thumbs up">👍</button><button data-act="emoji" title="Other reaction">☺</button>
+      ${inThread && m.parent_id ? '' : `<button data-act="thread" title="Reply in thread">💬</button>`}
+      ${mine ? '<button data-act="edit" title="Edit">✎</button>' : ''}
+      ${mine || state.me.role === 'owner' ? '<button data-act="delete" title="Delete">🗑</button>' : ''}
+    </div>
+  </div>`;
+}
+function renderList(msgs, opts) {
+  let html = '', prev = null, lastDay = '';
+  for (const m of msgs) {
+    const day = new Date(m.created_at).toDateString();
+    if (day !== lastDay && !opts?.noDays) { html += `<div class="day">${dayLabel(m.created_at)}</div>`; lastDay = day; prev = null; }
+    html += renderMsg(m, prev, opts); prev = m;
+  }
+  return html;
+}
+
+// ---------- Sidebar ----------
+function renderSidebar() {
+  const chans = state.channels.filter((c) => !c.is_dm && c.joined);
+  const isActive = (c) => state.view?.type === 'channel' && state.view.id === c.id;
+  $('#channelList').innerHTML = chans.map((c) => `<div class="item ${isActive(c) ? 'active' : ''} ${c.unread ? 'unread' : ''}" data-chan="${c.id}"><span class="hash">#</span>${esc(c.name)}${c.unread ? `<span class="badge">${c.unread}</span>` : ''}</div>`).join('')
+    + `<div class="item" id="browseChannels" style="opacity:.7"><span class="hash">⌕</span>Browse channels</div>`;
+  // DMs: show every member (self last) so you can always start a conversation.
+  const dmByMember = new Map(state.channels.filter((c) => c.is_dm).map((c) => [c.dm_with.id, c]));
+  const people = [...state.members.values()].filter((m) => m.status !== 'removed').sort((a, b) => (a.id === state.me.id) - (b.id === state.me.id) || (b.kind === 'human') - (a.kind === 'human') || a.handle.localeCompare(b.handle));
+  $('#dmList').innerHTML = people.map((m) => {
+    const ch = dmByMember.get(m.id);
+    const active = state.view?.type === 'channel' && ch && state.view.id === ch.id;
+    return `<div class="item ${active ? 'active' : ''} ${ch?.unread ? 'unread' : ''}" data-dm="${esc(m.handle)}" title="${esc(m.description || '')}"><span class="dot ${m.online ? 'on' : ''}"></span>${esc(m.name)}${m.id === state.me.id ? ' <span style="opacity:.6">(you)</span>' : ''}${m.kind === 'agent' ? ' <span class="tag">AI</span>' : ''}${ch?.unread ? `<span class="badge">${ch.unread}</span>` : ''}</div>`;
+  }).join('');
+  const unseen = state.inbox.length;
+  $('#inboxBadge').textContent = unseen; $('#inboxBadge').classList.toggle('hidden', !unseen);
+  $('#inboxItem').classList.toggle('active', state.view?.type === 'inbox');
+  $('#manageAgentsItem').classList.toggle('hidden', state.me.role !== 'owner');
+  $('#newAgentBtn').classList.toggle('hidden', state.me.role !== 'owner');
+  const total = state.channels.reduce((a, c) => a + (c.unread || 0), 0) + unseen;
+  document.title = total ? `(${total}) Switchboard` : 'Switchboard';
+}
+
+async function refreshChannels() { state.channels = await api('GET', '/api/channels'); renderSidebar(); }
+async function refreshMembers() { for (const m of await api('GET', '/api/members')) state.members.set(m.id, m); renderSidebar(); }
+async function refreshInbox() { state.inbox = (await api('GET', '/api/inbox')).items; renderSidebar(); }
+
+// ---------- Views ----------
+async function openChannel(ref) {
+  const data = await api('GET', `/api/channels/${encodeURIComponent(ref)}/messages?limit=100`);
+  const ch = data.channel;
+  state.view = { type: 'channel', id: ch.id, name: ch.name, is_dm: ch.is_dm };
+  state.messages = data.messages;
+  let title = `# ${ch.name}`, topic = ch.topic || (ch.is_dm ? '' : 'Add a topic');
+  if (ch.is_dm) {
+    await refreshChannels();
+    const c = state.channels.find((x) => x.id === ch.id);
+    const other = c?.dm_with;
+    title = other ? `${other.name}` : 'Direct message';
+    const om = other && state.members.get(other.id);
+    topic = om ? `@${om.handle}${om.kind === 'agent' ? ' · AI agent' : ''}${om.status ? ' · ' + om.status : ''}${om.description ? ' · ' + om.description : ''}` : '';
+  }
+  $('#chanTitle').textContent = title;
+  $('#chanTopic').textContent = topic;
+  $('#composer').classList.remove('hidden');
+  $('#input').placeholder = ch.is_dm ? `Message ${title}` : `Message #${ch.name}`;
+  renderMessages(true);
+  location.hash = ch.is_dm ? `dm/${ch.id}` : ch.name;
+  $('#side').classList.remove('open');
+  markRead();
+  $('#input').focus();
+}
+function renderMessages(scroll) {
+  const el = $('#msgs');
+  const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  el.innerHTML = state.messages.length ? renderList(state.messages)
+    : `<div class="empty"><h3>${state.view.is_dm ? 'Start of your conversation' : `Welcome to #${esc(state.view.name)}`}</h3><p>Messages from you and your agents will appear here.</p></div>`;
+  if (scroll || atBottom) el.scrollTop = el.scrollHeight;
+}
+async function markRead() {
+  if (state.view?.type !== 'channel') return;
+  await api('POST', `/api/channels/${state.view.id}/read`, {});
+  const c = state.channels.find((x) => x.id === state.view.id); if (c) c.unread = 0;
+  state.inbox = state.inbox.filter((i) => i.message.channel_id !== state.view.id || i.message.parent_id);
+  renderSidebar();
+}
+async function openInbox() {
+  state.view = { type: 'inbox' };
+  const items = (await api('GET', '/api/inbox?all=1&limit=100')).items.reverse();
+  $('#chanTitle').textContent = '🔔 Activity';
+  $('#chanTopic').textContent = 'Mentions, DMs and thread replies addressed to you';
+  $('#composer').classList.add('hidden');
+  $('#msgs').innerHTML = items.length ? items.map((i) => `<div style="${i.seen ? 'opacity:.65' : ''}">${renderMsg(i.message, null, { showWhere: true })}</div>`).join('') : '<div class="empty"><h3>All caught up</h3><p>When someone @mentions you or replies to you, it will show up here.</p></div>';
+  $('#msgs').scrollTop = 0;
+  location.hash = 'activity';
+  await api('POST', '/api/inbox/ack', {});
+  state.inbox = []; renderSidebar();
+}
+async function runSearch(q) {
+  state.view = { type: 'search' };
+  const { results } = await api('GET', `/api/search?q=${encodeURIComponent(q)}`);
+  $('#chanTitle').textContent = `Search: “${q}”`;
+  $('#chanTopic').textContent = `${results.length} result${results.length === 1 ? '' : 's'}`;
+  $('#composer').classList.add('hidden');
+  $('#msgs').innerHTML = results.map((m) => renderMsg(m, null, { showWhere: true })).join('') || '<div class="empty"><h3>No results</h3></div>';
+}
+
+async function openThread(id) {
+  const t = await api('GET', `/api/messages/${id}/thread`);
+  state.thread = t;
+  $('#thread').classList.remove('hidden');
+  renderThread(true);
+  $('#threadInput').focus();
+  refreshInbox();
+}
+function renderThread(scroll) {
+  const t = state.thread; if (!t) return;
+  const el = $('#threadMsgs');
+  el.innerHTML = renderMsg(t.root, null, { inThread: true }) + `<div class="thread-count">${t.replies.length} ${t.replies.length === 1 ? 'reply' : 'replies'}</div>` + renderList(t.replies, { inThread: true, noDays: true });
+  if (scroll) el.scrollTop = el.scrollHeight;
+}
+
+// ---------- Real-time ----------
+let es;
+function connect() {
+  es?.close();
+  es = new EventSource(`/api/events?token=${encodeURIComponent(state.token)}`);
+  es.addEventListener('message', (e) => {
+    const m = JSON.parse(e.data);
+    if (!state.members.has(m.member_id)) refreshMembers();
+    if (m.parent_id) {
+      const root = state.messages.find((x) => x.id === m.parent_id);
+      if (root) { root.reply_count = (root.reply_count || 0) + 1; if (state.view?.id === m.channel_id) renderMessages(); }
+      if (state.thread?.root.id === m.parent_id) { state.thread.replies.push(m); renderThread(true); }
+    } else if (state.view?.type === 'channel' && state.view.id === m.channel_id) {
+      state.messages.push(m); renderMessages(m.member_id === state.me.id);
+      if (document.hasFocus()) markRead(); else bumpUnread(m);
+    } else if (m.member_id !== state.me.id) bumpUnread(m);
+  });
+  es.addEventListener('message_updated', (e) => {
+    const m = JSON.parse(e.data);
+    const updated = { ...m, reactions: m.reactions.map((r) => ({ ...r, mine: r.members.includes(state.me.handle) })) };
+    const fix = (arr) => arr.forEach((x, i) => { if (x.id === m.id) arr[i] = updated; });
+    fix(state.messages);
+    if (state.thread) { fix(state.thread.replies); if (state.thread.root.id === m.id) state.thread.root = updated; }
+    if (state.view?.type === 'channel') renderMessages();
+    renderThread();
+  });
+  es.addEventListener('message_deleted', (e) => {
+    const d = JSON.parse(e.data);
+    state.messages = state.messages.filter((x) => x.id !== d.id);
+    if (d.parent_id) { const root = state.messages.find((x) => x.id === d.parent_id); if (root) root.reply_count--; }
+    if (state.thread) { if (state.thread.root.id === d.id) { state.thread = null; $('#thread').classList.add('hidden'); } else state.thread.replies = state.thread.replies.filter((x) => x.id !== d.id); }
+    if (state.view?.type === 'channel') renderMessages(); renderThread();
+  });
+  es.addEventListener('inbox', (e) => {
+    const d = JSON.parse(e.data);
+    const viewing = (state.view?.type === 'channel' && state.view.id === d.message.channel_id && !d.message.parent_id && document.hasFocus()) || state.thread?.root.id === d.message.parent_id;
+    if (!viewing) { state.inbox.push({ reason: d.reason, message: d.message }); renderSidebar(); notify(d); }
+  });
+  es.addEventListener('member', (e) => { const m = JSON.parse(e.data); state.members.set(m.id, m); renderSidebar(); });
+  es.addEventListener('presence', (e) => { const p = JSON.parse(e.data); const m = state.members.get(p.id); if (m) { m.online = p.online; renderSidebar(); } });
+  es.addEventListener('channel', () => refreshChannels());
+  es.onerror = () => { /* EventSource auto-reconnects */ };
+}
+function bumpUnread(m) {
+  const c = state.channels.find((x) => x.id === m.channel_id);
+  if (c) { c.unread = (c.unread || 0) + 1; renderSidebar(); } else refreshChannels();
+}
+function notify(d) {
+  if (!('Notification' in window) || Notification.permission !== 'granted' || document.hasFocus()) return;
+  const who = state.members.get(d.message.member_id);
+  new Notification(`${who?.name || d.message.author}${d.message.is_dm ? '' : ' in #' + d.message.channel}`, { body: d.message.body.slice(0, 200) });
+}
+
+// ---------- Sending ----------
+async function send(inputEl, parentId) {
+  const text = inputEl.value.trim();
+  if (!text) return;
+  inputEl.value = ''; autosize(inputEl);
+  try {
+    if (parentId) await api('POST', `/api/messages/${parentId}/replies`, { body: text });
+    else await api('POST', `/api/channels/${state.view.id}/messages`, { body: text });
+  } catch (e) { toast(e.message); inputEl.value = text; }
+}
+function autosize(el) { el.style.height = 'auto'; el.style.height = Math.min(el.scrollHeight, 200) + 'px'; }
+
+// @mention autocomplete
+function attachComposer(inputEl, onSend) {
+  let ac = null, sel = 0, matches = [];
+  const close = () => { ac?.remove(); ac = null; };
+  inputEl.addEventListener('input', () => {
+    autosize(inputEl);
+    const before = inputEl.value.slice(0, inputEl.selectionStart);
+    const m = before.match(/(^|\s)@([a-z0-9_-]*)$/i);
+    if (!m) return close();
+    const q = m[2].toLowerCase();
+    matches = [...state.members.values()].filter((x) => x.status !== 'removed' && (x.handle.startsWith(q) || x.name.toLowerCase().includes(q))).slice(0, 7);
+    if (!matches.length) return close();
+    sel = 0;
+    if (!ac) { ac = document.createElement('div'); ac.className = 'ac'; inputEl.closest('.composer').append(ac); }
+    const draw = () => { ac.innerHTML = matches.map((x, i) => `<div class="${i === sel ? 'sel' : ''}" data-h="${x.handle}"><span class="dot ${x.online ? 'on' : ''}"></span><b>${esc(x.name)}</b> <span style="opacity:.7">@${x.handle}</span>${x.kind === 'agent' ? ' ⚡' : ''}</div>`).join(''); };
+    draw(); ac.draw = draw;
+    ac.onmousedown = (e) => { const h = e.target.closest('[data-h]')?.dataset.h; if (h) { e.preventDefault(); pick(h); } };
+  });
+  const pick = (h) => {
+    const pos = inputEl.selectionStart, before = inputEl.value.slice(0, pos).replace(/@([a-z0-9_-]*)$/i, `@${h} `);
+    inputEl.value = before + inputEl.value.slice(pos); inputEl.selectionStart = inputEl.selectionEnd = before.length; close();
+  };
+  inputEl.addEventListener('keydown', (e) => {
+    if (ac) {
+      if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); sel = (sel + (e.key === 'ArrowDown' ? 1 : -1) + matches.length) % matches.length; ac.draw(); return; }
+      if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); pick(matches[sel].handle); return; }
+      if (e.key === 'Escape') return close();
+    }
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); onSend(); }
+  });
+  inputEl.addEventListener('blur', () => setTimeout(close, 150));
+}
+
+// ---------- Modals ----------
+function modal(html, onMount) {
+  const bg = document.createElement('div'); bg.className = 'modal-bg';
+  bg.innerHTML = `<div class="modal">${html}</div>`;
+  bg.addEventListener('mousedown', (e) => { if (e.target === bg) bg.remove(); });
+  bg.addEventListener('click', (e) => {
+    if (e.target.matches('[data-close]')) bg.remove();
+    if (e.target.matches('.copy')) { navigator.clipboard.writeText(e.target.parentElement.dataset.copy || e.target.parentElement.innerText.replace(/^Copy\n?/, '')); e.target.textContent = 'Copied!'; }
+  });
+  document.body.append(bg); onMount?.(bg); return bg;
+}
+const pre = (text) => `<pre data-copy="${esc(text)}"><button class="copy">Copy</button>${esc(text)}</pre>`;
+
+function snippets(handle, token) {
+  const url = location.origin;
+  const mcpPath = `${'<path-to-switchboard>'}/mcp.js`;
+  return {
+    'Claude Code': `claude mcp add switchboard \\\n  -e SWITCHBOARD_URL=${url} \\\n  -e SWITCHBOARD_TOKEN=${token} \\\n  -- node ${mcpPath}`,
+    'MCP JSON': JSON.stringify({ mcpServers: { switchboard: { command: 'node', args: [mcpPath], env: { SWITCHBOARD_URL: url, SWITCHBOARD_TOKEN: token } } } }, null, 2),
+    'curl': `# Post a message\ncurl -X POST ${url}/api/channels/general/messages \\\n  -H "Authorization: Bearer ${token}" \\\n  -H "Content-Type: application/json" \\\n  -d '{"body":"Hello from @${handle}!"}'\n\n# Wait (long-poll) for mentions / DMs addressed to me\ncurl "${url}/api/inbox/wait?timeout=60&ack=1" \\\n  -H "Authorization: Bearer ${token}"`,
+    'Python': `import requests\nURL, H = "${url}", {"Authorization": "Bearer ${token}"}\n\nrequests.post(f"{URL}/api/channels/general/messages", headers=H, json={"body": "Hello from @${handle}!"})\n\nwhile True:  # agent loop: react to anything addressed to me\n    for item in requests.get(f"{URL}/api/inbox/wait?timeout=60&ack=1", headers=H, timeout=90).json()["items"]:\n        m = item["message"]\n        reply = f"Got it, @{m['author']}!"  # <- call your LLM here\n        requests.post(f"{URL}/api/messages/{m['id']}/replies", headers=H, json={"body": reply})`,
+  };
+}
+function tokenPanel(handle, token) {
+  const sn = snippets(handle, token);
+  const keys = Object.keys(sn);
+  return `<div class="warn">Copy this token now. It won't be shown again (you can rotate it later).</div>
+    <label>Access token for @${esc(handle)}</label>${pre(token)}
+    <label>Connect your agent</label>
+    <div class="tabs">${keys.map((k, i) => `<button data-tab="${i}" class="${i ? '' : 'on'}">${k}</button>`).join('')}</div>
+    ${keys.map((k, i) => `<div data-pane="${i}" class="${i ? 'hidden' : ''}">${pre(sn[k])}</div>`).join('')}`;
+}
+function wireTabs(root) {
+  root.addEventListener('click', (e) => {
+    const t = e.target.closest('[data-tab]'); if (!t) return;
+    root.querySelectorAll('[data-tab]').forEach((b) => b.classList.toggle('on', b === t));
+    root.querySelectorAll('[data-pane]').forEach((p) => p.classList.toggle('hidden', p.dataset.pane !== t.dataset.tab));
+  });
+}
+
+function newAgentModal() {
+  const chans = state.channels.filter((c) => !c.is_dm);
+  modal(`<h3>⚡ Add an AI agent</h3>
+    <form id="agentForm">
+      <label>Display name</label><input class="field" name="name" placeholder="Research Assistant" required>
+      <label>Handle</label><input class="field" name="handle" placeholder="researcher" pattern="[a-z0-9][a-z0-9_\\-]{0,31}" required>
+      <label>What does this agent do?</label><input class="field" name="description" placeholder="Competitive research, market sizing, weekly briefs">
+      <label>Join channels</label>
+      <div>${chans.map((c) => `<label style="display:inline-flex;gap:4px;font-weight:400;margin-right:12px"><input type="checkbox" name="ch" value="${esc(c.name)}" ${['general', 'agent-logs'].includes(c.name) ? 'checked' : ''}> #${esc(c.name)}</label>`).join('')}</div>
+      <label>Webhook URL <span style="font-weight:400;color:var(--dim)">(optional: we'll POST to it when the agent is mentioned or DMed)</span></label>
+      <input class="field" name="webhook_url" placeholder="https://my-agent.example.com/switchboard">
+      <div class="err" id="agentErr"></div>
+      <div class="row"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Create agent</button></div>
+    </form>`, (bg) => {
+    const f = $('#agentForm', bg);
+    f.name.addEventListener('input', () => { if (!f.handle.dataset.touched) f.handle.value = f.name.value.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '').slice(0, 32); });
+    f.handle.addEventListener('input', () => { f.handle.dataset.touched = 1; });
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      try {
+        const r = await api('POST', '/api/members', { name: f.name.value, handle: f.handle.value, description: f.description.value, webhook_url: f.webhook_url.value || null, channels: [...f.querySelectorAll('[name=ch]:checked')].map((x) => x.value) });
+        state.members.set(r.member.id, r.member); renderSidebar();
+        $('.modal', bg).innerHTML = `<h3>✅ @${esc(r.member.handle)} is ready</h3>${tokenPanel(r.member.handle, r.token)}<div class="row"><button class="btn" data-close>Done</button></div>`;
+        wireTabs(bg);
+      } catch (err) { $('#agentErr', bg).textContent = err.message; }
+    };
+  });
+}
+
+function manageAgentsModal() {
+  const draw = () => [...state.members.values()].filter((m) => m.id !== state.me.id && m.status !== 'removed').map((m) => `
+    <div class="agent-row">${avatar(m)}<div class="info"><b>${esc(m.name)}</b> <span style="color:var(--dim)">@${esc(m.handle)}</span> ${m.kind === 'agent' ? '<span class="tag">AI</span>' : ''} ${m.online ? '<span class="dot on" style="display:inline-block"></span>' : ''}<small>${esc(m.description || m.status || '—')}</small></div>
+      <button class="btn ghost" data-rotate="${m.id}">New token</button><button class="btn ghost" data-remove="${m.id}" style="color:var(--danger)">Remove</button></div>`).join('') || '<p style="color:var(--dim)">No agents yet.</p>';
+  modal(`<h3>Agents & members</h3><div id="agentList">${draw()}</div>
+    <div class="row"><button class="btn ghost" data-close>Close</button><button class="btn" id="addFromManage">+ Add agent</button></div>`, (bg) => {
+    bg.addEventListener('click', async (e) => {
+      if (e.target.id === 'addFromManage') { bg.remove(); return newAgentModal(); }
+      const rot = e.target.dataset.rotate, rem = e.target.dataset.remove;
+      if (rot) {
+        const m = state.members.get(Number(rot));
+        if (!confirm(`Issue a new token for @${m.handle}? The old one stops working immediately.`)) return;
+        const { token } = await api('POST', `/api/members/${rot}/rotate-token`);
+        $('.modal', bg).innerHTML = `<h3>New token for @${esc(m.handle)}</h3>${tokenPanel(m.handle, token)}<div class="row"><button class="btn" data-close>Done</button></div>`;
+        wireTabs(bg);
+      }
+      if (rem) {
+        const m = state.members.get(Number(rem));
+        if (!confirm(`Remove @${m.handle}? Their access is revoked; message history is kept.`)) return;
+        await api('DELETE', `/api/members/${rem}`); await refreshMembers();
+        $('#agentList', bg).innerHTML = draw();
+      }
+    });
+  });
+}
+
+function newChannelModal() {
+  modal(`<h3>Create a channel</h3><form id="chForm">
+    <label>Name</label><input class="field" name="name" placeholder="marketing-launch" required>
+    <label>Topic</label><input class="field" name="topic" placeholder="What is this channel for?">
+    <label>Add members</label>
+    <div>${[...state.members.values()].filter((m) => m.id !== state.me.id && m.status !== 'removed').map((m) => `<label style="display:inline-flex;gap:4px;font-weight:400;margin-right:12px"><input type="checkbox" name="mem" value="${esc(m.handle)}"> @${esc(m.handle)}</label>`).join('')}</div>
+    <div class="err" id="chErr"></div>
+    <div class="row"><button type="button" class="btn ghost" data-close>Cancel</button><button class="btn">Create</button></div></form>`, (bg) => {
+    const f = $('#chForm', bg);
+    f.onsubmit = async (e) => {
+      e.preventDefault();
+      try { const c = await api('POST', '/api/channels', { name: f.name.value, topic: f.topic.value, members: [...f.querySelectorAll('[name=mem]:checked')].map((x) => x.value) }); bg.remove(); await refreshChannels(); openChannel(c.id); }
+      catch (err) { $('#chErr', bg).textContent = err.message; }
+    };
+  });
+}
+function browseChannelsModal() {
+  const list = state.channels.filter((c) => !c.is_dm);
+  modal(`<h3>Browse channels</h3>${list.map((c) => `<div class="agent-row"><div class="info"><b># ${esc(c.name)}</b><small>${esc(c.topic || 'No topic')} · ${c.member_count} members</small></div><button class="btn ${c.joined ? 'ghost' : ''}" data-open="${c.id}" data-join="${c.joined ? '' : 1}">${c.joined ? 'Open' : 'Join'}</button></div>`).join('')}<div class="row"><button class="btn ghost" data-close>Close</button></div>`, (bg) => {
+    bg.addEventListener('click', async (e) => {
+      const id = e.target.dataset.open; if (!id) return;
+      if (e.target.dataset.join) await api('POST', `/api/channels/${id}/join`);
+      bg.remove(); await refreshChannels(); openChannel(id);
+    });
+  });
+}
+
+// ---------- Event wiring ----------
+function onMsgAction(container) {
+  container.addEventListener('click', async (e) => {
+    const goto = e.target.closest('[data-goto]'); if (goto) { e.preventDefault(); return openChannel(goto.dataset.goto); }
+    const msgEl = e.target.closest('.msg'); if (!msgEl) return;
+    const id = Number(msgEl.dataset.id);
+    const t = e.target.closest('[data-thread]'); if (t) return openThread(t.dataset.thread);
+    const r = e.target.closest('[data-react]') || e.target.closest('[data-quick]');
+    if (r) return api('POST', `/api/messages/${id}/reactions`, { emoji: r.dataset.react || r.dataset.quick }).catch((x) => toast(x.message));
+    const act = e.target.closest('[data-act]')?.dataset.act;
+    if (act === 'thread') return openThread(id);
+    if (act === 'emoji') { const em = prompt('Emoji to react with:', '🎉'); if (em) api('POST', `/api/messages/${id}/reactions`, { emoji: em }); }
+    if (act === 'edit') {
+      const cur = [...state.messages, ...(state.thread ? [state.thread.root, ...state.thread.replies] : [])].find((x) => x.id === id);
+      const text = prompt('Edit message:', cur?.body); if (text && text !== cur?.body) api('PATCH', `/api/messages/${id}`, { body: text }).catch((x) => toast(x.message));
+    }
+    if (act === 'delete' && confirm('Delete this message?')) api('DELETE', `/api/messages/${id}`).catch((x) => toast(x.message));
+    if (state.view?.type !== 'channel' && !act && !r) { const ch = Number(msgEl.dataset.ch); await openChannel(ch); }
+  });
+}
+
+$('#side').addEventListener('click', async (e) => {
+  const c = e.target.closest('[data-chan]'); if (c) return openChannel(c.dataset.chan);
+  const d = e.target.closest('[data-dm]'); if (d) return openChannel('@' + d.dataset.dm);
+  if (e.target.closest('#inboxItem')) return openInbox();
+  if (e.target.closest('#browseChannels')) return browseChannelsModal();
+  if (e.target.closest('#manageAgentsItem')) return manageAgentsModal();
+});
+$('#newChannelBtn').onclick = newChannelModal;
+$('#newAgentBtn').onclick = newAgentModal;
+$('#menu').onclick = () => $('#side').classList.toggle('open');
+$('#closeThread').onclick = () => { state.thread = null; $('#thread').classList.add('hidden'); };
+$('#logoutBtn').onclick = () => logout();
+$('#chanTopic').onclick = async () => {
+  if (state.view?.type !== 'channel' || state.view.is_dm) return;
+  const t = prompt('Channel topic:', $('#chanTopic').textContent === 'Add a topic' ? '' : $('#chanTopic').textContent);
+  if (t !== null) { await api('PATCH', `/api/channels/${state.view.id}`, { topic: t }); $('#chanTopic').textContent = t || 'Add a topic'; }
+};
+$('#search').addEventListener('keydown', (e) => { if (e.key === 'Enter' && e.target.value.trim()) runSearch(e.target.value.trim()); });
+attachComposer($('#input'), () => send($('#input')));
+attachComposer($('#threadInput'), () => send($('#threadInput'), state.thread.root.id));
+$('#sendBtn').onclick = () => send($('#input'));
+$('#threadSend').onclick = () => send($('#threadInput'), state.thread.root.id);
+onMsgAction($('#msgs')); onMsgAction($('#threadMsgs'));
+window.addEventListener('focus', () => { if (state.view?.type === 'channel') markRead(); });
+
+// Infinite scroll back through history
+$('#msgs').addEventListener('scroll', async (e) => {
+  if (e.target.scrollTop > 40 || state.view?.type !== 'channel' || state.loadingOlder || !state.messages.length) return;
+  state.loadingOlder = true;
+  const el = e.target, h = el.scrollHeight;
+  const { messages } = await api('GET', `/api/channels/${state.view.id}/messages?before=${state.messages[0].id}&limit=50`);
+  if (messages.length) { state.messages = [...messages, ...state.messages]; renderMessages(); el.scrollTop = el.scrollHeight - h; }
+  state.loadingOlder = !messages.length; // stop when history is exhausted
+});
+
+// ---------- Boot ----------
+function logout() { localStorage.removeItem('sb_token'); state.token = null; es?.close(); $('#app').classList.add('hidden'); $('#login').classList.remove('hidden'); }
+$('#loginForm').onsubmit = async (e) => {
+  e.preventDefault();
+  state.token = $('#tokenInput').value.trim();
+  try { await boot(); localStorage.setItem('sb_token', state.token); }
+  catch (err) { $('#loginErr').textContent = 'That token did not work.'; }
+};
+async function boot() {
+  const res = await fetch('/api/me', { headers: { authorization: `Bearer ${state.token}` } });
+  if (!res.ok) throw new Error('bad token');
+  state.me = await res.json();
+  $('#meLabel').textContent = `${state.me.name} (@${state.me.handle})`;
+  $('#login').classList.add('hidden'); $('#app').classList.remove('hidden');
+  await Promise.all([refreshMembers(), refreshChannels(), refreshInbox()]);
+  connect();
+  const h = decodeURIComponent(location.hash.slice(1));
+  if (h === 'activity') openInbox();
+  else if (h.startsWith('dm/')) openChannel(h.slice(3));
+  else openChannel(h && state.channels.some((c) => c.name === h) ? h : 'general');
+  if ('Notification' in window && Notification.permission === 'default') setTimeout(() => Notification.requestPermission(), 3000);
+}
+if (state.token) boot().catch(() => logout()); else logout();
+</script>
+</body>
+</html>
